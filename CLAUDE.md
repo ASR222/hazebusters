@@ -15,6 +15,7 @@
 - Don't reuse anything from the old "AQI Vision" project (see §2).
 - Prefer small, working, committed steps over big rewrites. Commit after each working step.
 - User prefers concise, practical, informal answers.
+- **Background monitors produced fake results** (made-up runs with plausible metrics). Only report metrics read from files on disk (`ml/runs/...`); run long jobs in the foreground or detached and verify on disk.
 
 ## 1. Who / what
 
@@ -85,7 +86,8 @@ Pitch: *"Most of India has no air quality monitor. We turned every phone into on
 - **India/Nepal = out-of-domain test set, not training.** Recompute CPCB labels (§5), evaluate the TRAQID-trained model on it. Pitch line: *"Trained in Hyderabad, tested on 7 other Indian cities."* If ever used for training, split by **moment** (location+date+hour), not image.
 - Report: **macro-F1**, accuracy vs **majority baseline** (≈52% on all TRAQID 3-band; **≈47% after the day-only filter** — use 47% for our numbers; per split 47.2/47.4/47.5%), **within-one-band accuracy**, and **recall for Very Poor/Severe** separately.
 - Sanity check: agreement between our recomputed TRAQID labels and its own `aqi_cat`.
-- Rough expectation: ~65–80% on held-out TRAQID dates; lower out-of-domain and on our own clips. Collect 20–30 own clips/photos as a real-world test set.
+- **Result (Thu, EfficientNet-B0, seed 0, `ml/runs/20261008-174356_efficientnet_b0_s0/`): test accuracy 32.0% vs 47.5% majority baseline** (macro-F1 0.312, band-2 recall 57%, confidently wrong: mean confidence 0.80); val 22%. Same checkpoint on its **train dates: 89%** (82–100% per date) → no pipeline bug; **the model learns the day, not haze**. Frames within a date are highly correlated (a single band covers a median ~78% of a date's frames, 47–99%; ≥94% on 4 of 17 dates), so there are effectively ~17 independent samples. Seeds 1–2 not run (stopped). **Direction pending the probes** (frozen-embedding + handcrafted-feature logistic regression, leave-one-date-out; India/Nepal leave-one-city-out) in `ml/runs/probes/`.
+- Old rough expectation (now unrealistic for TRAQID-only): ~65–80% on held-out TRAQID dates; lower out-of-domain and on our own clips. Collect 20–30 own clips/photos as a real-world test set.
 
 ## 5. Label mapping — CPCB-style AQI (first thing to code after kickoff)
 
