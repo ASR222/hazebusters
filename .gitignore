@@ -1,0 +1,12 @@
+.env
+.venv/
+data/
+node_modules/
+__pycache__/
+.aws-sam/
+runs/
+*.onnx
+*.pt
+*.pth
+*.keras
+*.zip
