@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Environmental Hacks (Air track)
 
 > Handoff for Claude Code or any new AI chat session. Read this fully before helping.
-> Lives in the repo as `CLAUDE.md`. Last updated: Thu 8 Oct 2026, 07:30 IST (before kickoff).
+> Lives in the repo as `CLAUDE.md`. Last updated: Thu 8 Oct 2026 (after kickoff: TRAQID split findings in §4).
 > **Strategy is expected to change** as we build; when something here conflicts with what the
 > user says now, the user wins — then update this file.
 
@@ -65,10 +65,11 @@ Pitch: *"Most of India has no air quality monitor. We turned every phone into on
 
 ## 4. ML design (decided)
 
-- **Training data: TRAQID only, daytime (`Day_or_Night == Day`), front view only.** The app's quality gate rejects night frames, so training matches real use and drops the noisiest half.
+- **Training data: TRAQID only, daytime (`Day_or_Night == Day`), front view only.** The app's quality gate rejects night frames, so training matches real use and drops the noisiest half. After the filter: **13,789 frames from only 17 calendar dates** (2022-10 → 2024-07). Loader: `ml/src/hazeml/traqid.py` (`load_traqid()`, reads only the CSV).
+- **Time-of-day confound:** the worst air (21–23 Dec 2023) was filmed on **morning drives**; most other frames are late afternoon (15:00–18:00). Very Poor/Severe share: **43% of frames before 11:00 vs 9% from 15:00** (July mornings are mostly clean, so it's not absolute). The CNN can learn "morning light = bad air" → use strong colour/brightness/contrast augmentation, report accuracy by morning vs evening, and lean on the OOD test + own clips.
 - **Model:** pretrained **EfficientNet-B0 or MobileNetV3**, fine-tuned, 224 px, mixed precision, batch ~32 (reduce on OOM).
 - **Classes: 3 CPCB bands** — Good/Satisfactory (0–100), Moderate/Poor (101–300), Very Poor/Severe (301+). Use **class weights** (Very Poor/Severe is only ~12% of TRAQID).
-- **Multimodal variant (Fri):** CNN embedding ⊕ [mean saturation, contrast, dark-channel, brightness, temperature, humidity, hour, season, YOLO vehicle count] → MLP head. TRAQID only. **Compare vs image-only on the same split; keep the winner.** Image-only stays the runtime fallback.
+- **Multimodal variant (Fri):** CNN embedding ⊕ [mean saturation, contrast, dark-channel, brightness, temperature, humidity, season, YOLO vehicle count] → MLP head. TRAQID only. **No `hour`** (it encodes the time-of-day confound above). **`season` is risky**: with 17 dates it nearly identifies the collection trip (all Very Poor/Severe-heavy dates are Winter/Dec) → include only if an ablation without it is also reported. **Compare vs image-only on the same split; keep the winner.** Image-only stays the runtime fallback.
 - **Never feed station AQI/PM as a model input** (it's the label; the model would copy it). Station reading is shown separately.
 - **No 3-stream CNN** (old project's design): too slow for video on Lambda, doubtful gain, too close to the old project. Optional Sat ablation only if ahead.
 - **YOLO:** yolov8n / yolo11n (Ultralytics, **AGPL** — repo stays open source), fine-tuned for smoke/fire; vehicles from pretrained COCO classes.
@@ -78,8 +79,11 @@ Pitch: *"Most of India has no air quality monitor. We turned every phone into on
 
 ### Evaluation (be honest)
 - **TRAQID split by calendar date** (from `created_at`): hold out ~20% of dates as test (plus a val split). Random splits leak (frames 5 s apart).
+  - **Frozen in `ml/splits/traqid_dates.json`** (committed; dates only). Chosen by exhaustive search for ~70/10/20 rows with each split's band mix close to overall: train 9,657 rows / 10 dates, val 1,361 / 2 (2022-10-26, 2024-03-06), test 2,771 / 5 (2023-01-30, 02-01, 02-08, 2023-12-21, 2024-03-02). Don't change it once results are reported; `python -m hazeml.traqid --make-split` regenerates.
+  - **Very Poor/Severe test recall rests mostly on one morning (21 Dec 2023, ~430 of ~460 band-2 test rows)** → expect it to swing; say so.
+  - **21 Dec is in test while 22–23 Dec (same smog episode) are in train** — no shared frames, but shared weather/lighting. Keeping the episode together left too little band 2 in train or test; disclose it in the writeup.
 - **India/Nepal = out-of-domain test set, not training.** Recompute CPCB labels (§5), evaluate the TRAQID-trained model on it. Pitch line: *"Trained in Hyderabad, tested on 7 other Indian cities."* If ever used for training, split by **moment** (location+date+hour), not image.
-- Report: **macro-F1**, accuracy vs **majority baseline** (≈52% on all TRAQID 3-band; **recompute after the day-only filter**), **within-one-band accuracy**, and **recall for Very Poor/Severe** separately.
+- Report: **macro-F1**, accuracy vs **majority baseline** (≈52% on all TRAQID 3-band; **≈47% after the day-only filter** — use 47% for our numbers; per split 47.2/47.4/47.5%), **within-one-band accuracy**, and **recall for Very Poor/Severe** separately.
 - Sanity check: agreement between our recomputed TRAQID labels and its own `aqi_cat`.
 - Rough expectation: ~65–80% on held-out TRAQID dates; lower out-of-domain and on our own clips. Collect 20–30 own clips/photos as a real-world test set.
 

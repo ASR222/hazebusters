@@ -8,6 +8,13 @@ Sub-index = linear interpolation within the breakpoint row. Upper row values
 are treated as breakpoints (PM2.5 30 -> 50, 30.5 -> Satisfactory), so the
 mapping is continuous with no gaps. Above the top row the last slope
 continues; the AQI is not capped at 500.
+
+CPCB's own formula interpolates within integer rows (e.g. PM2.5 31-60 ->
+AQI 51-100), so near the bottom of a row our value can differ from it by
+about 1 AQI (PM2.5 31: CPCB 51, ours 51.7). Categories only differ for
+concentrations falling between the integer rows (e.g. 30.5).
+
+Pure Python (no numpy/pandas) so the backend Lambda can import it as is.
 """
 
 import math
