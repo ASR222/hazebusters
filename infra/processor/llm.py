@@ -1,7 +1,8 @@
 """Bedrock (Converse) advice: structured facts in, {"en", "hi"} out, validated before use.
 
 The model only phrases facts our pipeline computed (CLAUDE.md §4): every number in its output must already be in the
-facts, the AQI must appear in both languages, Hindi must be Devanagari, and length is capped. Any failure raises
+facts, the AQI must appear in both languages, Hindi must be Devanagari, length is capped, and nothing extra is
+allowed (no keys beyond en/hi, no text around the JSON, no markdown or line breaks). Any failure raises
 AdviceRejected (or the boto error), and advice.build falls back to the template.
 """
 
@@ -20,8 +21,7 @@ MAX_TOKENS = 700
 SYSTEM = """You write short outdoor air-quality advice for one place in India, in English and in Hindi.
 
 You get a JSON object of facts computed by our pipeline. Rules:
-- Write 2-3 sentences in English and 2-3 sentences in Hindi with the same meaning.
-- Hindi: Devanagari script, simple everyday Hindi (not formal or Sanskritised). Write "AQI" as is. Use Western digits (0-9).
+- Write 2-3 short sentences in English and 2-3 short sentences in Hindi with the same meaning.
 - Start by stating the AQI number. Then the recommendation for the profile (school / outdoor worker / general public)
   that matches `outdoor`: yes = outdoor activity is fine; limit = keep outdoor activity short and light; no = keep
   activities indoors. If `for` is "tomorrow", the recommendation is for tomorrow and the AQI is the reading right now.
@@ -31,13 +31,23 @@ You get a JSON object of facts computed by our pipeline. Rules:
   (times are already written as spoken words; do not convert them to digits like 09:00).
 - If `confidence` is "low", you may say the reading is an estimate; do not explain models or stations otherwise.
 - Mention visible causes only if `causes.available` is true and something is present.
-- Plain text only: no markdown, no emoji, no lists, no "|" characters.
 
-Reply with only a JSON object: {"en": "...", "hi": "..."}"""
+Hindi:
+- Simple, natural spoken Hindi, the way an Indian news reader would say it on air: short sentences, everyday words,
+  correct grammar and gender agreement. Write it fresh in Hindi; do not translate the English word by word.
+- Devanagari script. Keep "AQI" in Latin letters. Use Western digits (0-9). End sentences with "।".
+- Address people with "आप". Prefer common words (हवा, बाहर, घर के अंदर, साँस, बच्चे, काम) over formal Sanskrit words.
+- Example of the style (different facts): "आज हवा का AQI 85 है। बाहर खेलना और काम करना ठीक है।"
+
+Output:
+- Plain text inside the strings: no markdown, no asterisks, no emoji, no lists, no "|" characters, no line breaks.
+- Return only the JSON object, nothing else: no code fences, no explanation before or after it.
+  {"en": "...", "hi": "..."}"""
 
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+_MARKUP = re.compile(r"[*#`|_\n]")
 
 _client = None
 
@@ -65,6 +75,8 @@ def parse(text: str) -> dict:
         raise AdviceRejected(f"not JSON: {e}") from None
     if not isinstance(out, dict):
         raise AdviceRejected("JSON is not an object")
+    if extra := sorted(set(out) - {"en", "hi"}):
+        raise AdviceRejected(f"unexpected keys: {extra}")
     return out
 
 
@@ -78,6 +90,8 @@ def validate(out: dict, facts: dict) -> dict:
         t = t.strip()
         if len(t) > MAX_CHARS:
             raise AdviceRejected(f"{lang} too long ({len(t)} > {MAX_CHARS} chars)")
+        if m := _MARKUP.search(t):
+            raise AdviceRejected(f"{lang} has markup or line breaks ({m[0]!r})")
         texts[lang] = t
     if not _DEVANAGARI.search(texts["hi"]):
         raise AdviceRejected("hi has no Devanagari")

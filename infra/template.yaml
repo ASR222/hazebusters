@@ -120,7 +120,9 @@ Resources:
       Environment:
         Variables:
           WAQI_TOKEN: !Ref WaqiToken
-          BEDROCK_MODEL_ID: in.anthropic.claude-haiku-4-5-20251001-v1:0
+          # Amazon Nova 2 Lite (global profile). Anthropic models need a Marketplace subscription this account
+          # can't make; to switch back: in.anthropic.claude-haiku-4-5-20251001-v1:0 (+ its IAM ARNs).
+          BEDROCK_MODEL_ID: global.amazon.nova-2-lite-v1:0
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref JobsTable
@@ -133,14 +135,14 @@ Resources:
             - Effect: Allow
               Action: s3:PutObject  # audio only; never uploads/ (that prefix triggers this function)
               Resource: !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
-            # India cross-region inference profile; it routes to ap-south-1 and ap-south-2
-            # (aws bedrock get-inference-profile, 9 Oct 2026).
+            # Global inference profile; `aws bedrock get-inference-profile` (9 Oct 2026) lists the region-less
+            # foundation-model ARN (global routing) plus the ap-south-1 one.
             - Effect: Allow
               Action: bedrock:InvokeModel
               Resource:
-                - !Sub "arn:${AWS::Partition}:bedrock:ap-south-1:${AWS::AccountId}:inference-profile/in.anthropic.claude-haiku-4-5-20251001-v1:0"
-                - !Sub "arn:${AWS::Partition}:bedrock:ap-south-1::foundation-model/anthropic.claude-haiku-4-5*"
-                - !Sub "arn:${AWS::Partition}:bedrock:ap-south-2::foundation-model/anthropic.claude-haiku-4-5*"
+                - !Sub "arn:${AWS::Partition}:bedrock:ap-south-1:${AWS::AccountId}:inference-profile/global.amazon.nova-2-lite-v1:0"
+                - !Sub "arn:${AWS::Partition}:bedrock:::foundation-model/amazon.nova-2-lite-v1:0"
+                - !Sub "arn:${AWS::Partition}:bedrock:ap-south-1::foundation-model/amazon.nova-2-lite-v1:0"
       EventInvokeConfig:
         MaximumRetryAttempts: 0  # the handler records failures itself; retries would reprocess the clip
       Events:

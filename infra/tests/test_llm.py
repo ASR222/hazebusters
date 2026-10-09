@@ -34,7 +34,7 @@ class FakeBedrock:
 
 @pytest.fixture(autouse=True)
 def model(monkeypatch):
-    monkeypatch.setenv("BEDROCK_MODEL_ID", "in.anthropic.claude-haiku-4-5-20251001-v1:0")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "global.amazon.nova-2-lite-v1:0")
 
 
 def run(fake):
@@ -46,7 +46,7 @@ def test_good_json_is_used():
     out, speech = run(fake)
     assert out == {**GOOD, "source": "bedrock"} and speech == GOOD
     call = fake.calls[0]
-    assert call["modelId"] == "in.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert call["modelId"] == "global.amazon.nova-2-lite-v1:0"
     sent = json.loads(call["messages"][0]["content"][0]["text"])
     assert sent["aqi"] == 134 and sent["outdoor"] == "limit" and sent["profile"] == "school"
     assert sent["best_window"] == {"en": "from 9 AM to 12 noon", "hi": "सुबह 9 बजे से दोपहर 12 बजे तक"}
@@ -69,6 +69,20 @@ def _fallback(fake, capsys, reason):
 
 def test_bad_json_falls_back(capsys):
     _fallback(FakeBedrock("Sure! Here is the advice: AQI 134..."), capsys, "not JSON")
+
+
+def test_commentary_around_json_falls_back(capsys):
+    text = "Here is the advice:\n" + json.dumps(GOOD, ensure_ascii=False) + "\nLet me know if you need more."
+    _fallback(FakeBedrock(text), capsys, "not JSON")
+
+
+def test_extra_keys_fall_back(capsys):
+    _fallback(FakeBedrock(json.dumps({**GOOD, "note": "estimate"}, ensure_ascii=False)), capsys, "unexpected keys")
+
+
+@pytest.mark.parametrize("bad", ["**Today's AQI is 134.** Stay in.", "Today's AQI is 134.\n- Stay in."])
+def test_markdown_falls_back(capsys, bad):
+    _fallback(FakeBedrock(json.dumps({"en": bad, "hi": GOOD["hi"]}, ensure_ascii=False)), capsys, "markup")
 
 
 def test_missing_hindi_falls_back(capsys):
