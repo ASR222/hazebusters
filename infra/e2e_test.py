@@ -4,7 +4,7 @@
 
 Per clip: POST /jobs (Ranchi, school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
 until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
-audio URL and check it's a non-empty mp3 (--save-audio DIR keeps the files). Exit 1 on any failure.
+and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files). Exit 1 on any failure.
 """
 
 import argparse
@@ -70,19 +70,22 @@ def is_mp3(data: bytes) -> bool:
 
 
 def check_audio(got: dict, clip: Path, save_dir: Path | None) -> list[str]:
-    url = (got.get("audio_urls") or {}).get("hi")
-    if not got["result"]["audio"]["hi_key"] or not url:
-        return [f"no Hindi audio (hi_key={got['result']['audio']['hi_key']!r}, url={'set' if url else None})"]
-    t0 = time.monotonic()
-    status, data = request("GET", url)
-    print(f"[{clip.name}] audio GET -> {status}, {len(data)} bytes in {time.monotonic() - t0:.2f} s")
-    if status != 200 or not data or not is_mp3(data):
-        return [f"audio not a non-empty mp3 (status {status}, {len(data)} bytes, head {data[:4]!r})"]
-    if save_dir:
-        out = save_dir / f"{clip.stem}_{got['job_id']}_hi.mp3"
-        out.write_bytes(data)
-        print(f"[{clip.name}] saved {out}")
-    return []
+    errs = []
+    for lang in ("hi", "en"):
+        key, url = got["result"]["audio"][f"{lang}_key"], (got.get("audio_urls") or {}).get(lang)
+        if not key or not url:
+            errs.append(f"no {lang} audio (key={key!r}, url={'set' if url else None})")
+            continue
+        t0 = time.monotonic()
+        status, data = request("GET", url)
+        print(f"[{clip.name}] {lang} audio GET -> {status}, {len(data)} bytes in {time.monotonic() - t0:.2f} s")
+        if status != 200 or not data or not is_mp3(data):
+            errs.append(f"{lang} audio not a non-empty mp3 (status {status}, {len(data)} bytes, head {data[:4]!r})")
+        elif save_dir:
+            out = save_dir / f"{clip.stem}_{got['job_id']}_{lang}.mp3"
+            out.write_bytes(data)
+            print(f"[{clip.name}] saved {out}")
+    return errs
 
 
 def run(api: str, clip: Path, save_dir: Path | None = None) -> bool:

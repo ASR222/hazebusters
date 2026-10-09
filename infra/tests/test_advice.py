@@ -38,21 +38,62 @@ def test_spoken_times(text, expected):
     assert advice.spoken_times(text) == expected
 
 
-def _air(outdoor, window, day="today"):
-    return {"air": {"aqi_cpcb": 122},
+@pytest.mark.parametrize("h, m, expected", [
+    (9, 0, "9 AM"),
+    (9, 30, "9:30 AM"),
+    (12, 0, "12 noon"),
+    (12, 30, "12:30 PM"),
+    (15, 0, "3 PM"),
+    (0, 0, "12 midnight"),
+    (0, 15, "12:15 AM"),
+    (23, 0, "11 PM"),
+])
+def test_english_time(h, m, expected):
+    assert advice.english_time(h, m) == expected
+
+
+def test_english_range():
+    assert advice.english_range((9, 0), (12, 0)) == "from 9 AM to 12 noon"
+    assert advice.english_range((21, 0), (0, 0)) == "from 9 PM to 12 midnight"
+    assert advice.spoken_times("Best time: 16:30-18:00.", "en") == "Best time: from 4:30 PM to 6 PM."
+
+
+def _air(outdoor, window, day="today", aqi=134):
+    return {"air": {"aqi_cpcb": aqi},
             "decision": {"for": day, "outdoor": outdoor, "best_window": window, "reason_code": "x"}}
 
 
-def test_build_formats_hindi_window_at_source():
-    window = {"start": "2026-10-10T09:00:00+05:30", "end": "2026-10-10T12:00:00+05:30"}
-    out, sections = advice.build(_air("limit", window), "school")
+WINDOW = {"start": "2026-10-10T09:00:00+05:30", "end": "2026-10-10T12:00:00+05:30"}
+
+
+def test_build_limit_today():
+    out, sections = advice.build(_air("limit", WINDOW), "school")
     assert out["source"] == "template"
-    assert out["en"].endswith("Best window: 09:00–12:00.")
-    assert sections[-1] == "सबसे अच्छा समय: सुबह 9 बजे से दोपहर 12 बजे तक।"
-    assert out["hi"] == " ".join(sections) and len(sections) == 3
-    assert ":00" not in out["hi"]
+    assert sections["hi"] == ["आज हवा का AQI 134 है। बाहर की गतिविधि सीमित रखें, कम समय और हल्की।",
+                              "फेफड़ों या दिल की बीमारी या दमा वाले लोगों को साँस लेने में तकलीफ़ हो सकती है।",
+                              "सबसे अच्छा समय: सुबह 9 बजे से दोपहर 12 बजे तक।"]
+    assert sections["en"] == ["Today's AQI is 134. Limit outdoor activity: keep it short and light.",
+                              "People with lung or heart disease or asthma may feel breathing discomfort.",
+                              "Best time: from 9 AM to 12 noon."]
+    assert out["hi"] == " ".join(sections["hi"]) and out["en"] == " ".join(sections["en"])
+
+
+def test_build_has_no_parenthetical_or_double_colon():
+    for outdoor in ("yes", "limit", "no"):
+        out, _ = advice.build(_air(outdoor, WINDOW), "school")
+        for text in (out["en"], out["hi"]):
+            assert "(" not in text and "CPCB" not in text and "|" not in text
+            assert text.count(":") <= 2  # at most "Limit outdoor activity:" and "Best time:"
+        assert out["hi"].count(":") <= 1
+
+
+def test_build_tomorrow_says_now_for_the_aqi():
+    out, _ = advice.build(_air("no", None, day="tomorrow"), "school")
+    assert out["en"].startswith("The AQI right now is 134. Tomorrow, keep activities indoors.")
+    assert out["hi"].startswith("अभी हवा का AQI 134 है। कल गतिविधियाँ घर के अंदर रखें।")
 
 
 def test_build_yes_has_one_section():
     out, sections = advice.build(_air("yes", None), "general")
-    assert len(sections) == 1 and out["hi"].startswith("आज: ")
+    assert len(sections["hi"]) == len(sections["en"]) == 1
+    assert out["en"] == "Today's AQI is 134. Air is fine for outdoor activity."
