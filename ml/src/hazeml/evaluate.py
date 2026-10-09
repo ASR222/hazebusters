@@ -23,15 +23,17 @@ TIME_OF_DAY = (("morning (<11)", 0, 11), ("midday (11-15)", 11, 15), ("evening (
 
 
 @torch.no_grad()
-def predict(model, loader, device) -> np.ndarray:
-    """Softmax probabilities, one row per sample, in loader order."""
+def predict(model, loader, device, activation: str = "softmax") -> np.ndarray:
+    """Probabilities (softmax over classes, or per-label sigmoid), one row per sample, in loader order."""
     model.eval()
     out = []
     for x, _ in loader:
         x = x.to(device, non_blocking=True).to(memory_format=torch.channels_last)
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             logits = model(x)
-        out.append(torch.softmax(logits.float(), dim=1).cpu().numpy())
+        logits = logits.float()
+        probs = torch.sigmoid(logits) if activation == "sigmoid" else torch.softmax(logits, dim=1)
+        out.append(probs.cpu().numpy())
     return np.concatenate(out)
 
 
