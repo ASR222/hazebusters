@@ -212,3 +212,72 @@ def test_output_matches_contract_keys(monkeypatch):
     assert set(out["forecast_today"][0]) == set(contract["forecast_today"][0])
     assert set(out["decision"]) == set(contract["decision"])
     assert set(out["decision"]["best_window"] or contract["decision"]["best_window"]) == {"start", "end"}
+
+
+# --- profile windows, correction, caveats ------------------------------------------------------
+
+
+EARLY = NOW.replace(hour=5, minute=0)
+
+
+@pytest.mark.parametrize("profile, expected", [
+    ("school", ("07:00", "09:00")),   # 06-09 slot clipped to school hours 07-17
+    ("worker", ("06:00", "09:00")),
+    ("general", ("06:00", "09:00")),
+])
+def test_best_window_clipped_to_profile_hours(profile, expected):
+    w = combine.best_window([slot(6, 80)], EARLY, profile)
+    assert (w["start"][11:16], w["end"][11:16]) == expected
+
+
+@pytest.mark.parametrize("profile, expected", [("school", None), ("worker", ("18:00", "19:00")), ("general", ("18:00", "21:00"))])
+def test_evening_slot_depends_on_profile(profile, expected):
+    w = combine.best_window([slot(18, 70)], EARLY, profile)
+    assert (w and (w["start"][11:16], w["end"][11:16])) == expected
+
+
+def test_night_slots_never_count():
+    assert all(combine.best_window([slot(0, 20), slot(21, 20)], EARLY, p) is None for p in combine.PROFILE_WINDOWS)
+
+
+def test_no_window_today_reason_code():
+    late = NOW.replace(hour=17, minute=30)
+    out = combine.combine(meas(aqi=80, band=0), modl(aqi=80, band=0), [slot(15, 80), slot(18, 80)], late, profile="school")
+    assert out["decision"]["outdoor"] == "yes"
+    assert out["decision"]["best_window"] is None
+    assert out["decision"]["reason_code"] == "no_window_today"
+
+
+def test_unknown_profile_rejected():
+    with pytest.raises(ValueError):
+        combine.combine(meas(), modl(), [], NOW, profile="pilot")
+
+
+def test_modelled_only_is_scaled_by_correction(monkeypatch):
+    from cpcb_aqi import cpcb_aqi
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload())
+    out = combine.air_for(*RANCHI, token=None, now=NOW)
+    m = out["air"]["modelled"]
+    # Raw CAMS at 10:00 is PM2.5 30, PM10 50 -> scaled x1.25.
+    assert m["pm25"] == pytest.approx(30 * combine.CAMS_CORRECTION)
+    assert m["pm10"] == pytest.approx(50 * combine.CAMS_CORRECTION)
+    assert m["aqi_cpcb"] == round(cpcb_aqi(37.5, 62.5))
+    assert out["air"]["aqi_cpcb"] == m["aqi_cpcb"]
+    assert out["forecast_today"][0]["pm25"] == pytest.approx(21.0 * combine.CAMS_CORRECTION, abs=0.06)  # rounded to 0.1
+    assert sum("scaled x1.25" in c for c in out["caveats"]) == 1
+
+
+def test_station_reading_disables_correction(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10:
+                        waqi_payload(geo=(22.80, 86.20)) if "waqi" in url else openmeteo_payload())
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["used"] == "modelled"  # far station, but a reading exists
+    assert out["air"]["modelled"]["pm25"] == 30.0
+    assert not any("scaled" in c for c in out["caveats"])
+
+
+def test_caveats_have_no_duplicates_and_one_waqi_reason(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload())
+    out = combine.air_for(*RANCHI, token=None, now=NOW)
+    assert len(out["caveats"]) == len(set(out["caveats"]))
+    assert [c for c in out["caveats"] if "WAQI" in c] == ["WAQI not queried (no WAQI_TOKEN)."]

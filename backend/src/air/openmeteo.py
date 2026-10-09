@@ -46,20 +46,27 @@ def _r(x):
     return None if x is None else round(x, 1)
 
 
-def modelled_now(hours: list[dict], now: datetime) -> dict | None:
-    """Latest hour at or before `now` that has a value (falls back to the first hour of the day)."""
+def _scaled(x, scale: float):
+    return None if x is None else x * scale
+
+
+def modelled_now(hours: list[dict], now: datetime, scale: float = 1.0) -> dict | None:
+    """Latest hour at or before `now` that has a value (falls back to the first hour of the day).
+
+    `scale` multiplies PM before the AQI (bias correction, see combine.CAMS_CORRECTION)."""
     usable = [h for h in hours if h["pm25"] is not None or h["pm10"] is not None]
     if not usable:
         return None
     past = [h for h in usable if h["time"] <= now]
     h = past[-1] if past else usable[0]
-    aqi, band = _aqi(h["pm25"], h["pm10"])
+    pm25, pm10 = _scaled(h["pm25"], scale), _scaled(h["pm10"], scale)
+    aqi, band = _aqi(pm25, pm10)
     return {"source": SOURCE, "grid_km": GRID_KM, "valid_at": h["time"].isoformat(),
-            "pm25": _r(h["pm25"]), "pm10": _r(h["pm10"]), "aqi_cpcb": aqi, "band": band}
+            "pm25": _r(pm25), "pm10": _r(pm10), "aqi_cpcb": aqi, "band": band}
 
 
-def forecast_3h(hours: list[dict]) -> list[dict]:
-    """Today's 3-hour slots (00, 03, ... 21): mean PM per slot -> CPCB-style AQI from PM2.5 and PM10."""
+def forecast_3h(hours: list[dict], scale: float = 1.0) -> list[dict]:
+    """Today's 3-hour slots (00, 03, ... 21): mean PM per slot (x `scale`) -> CPCB-style AQI from PM2.5 and PM10."""
     slots: dict[datetime, list[dict]] = {}
     for h in hours:
         start = h["time"].replace(hour=h["time"].hour - h["time"].hour % 3)
@@ -71,7 +78,7 @@ def forecast_3h(hours: list[dict]) -> list[dict]:
 
     out = []
     for start, hs in sorted(slots.items()):
-        pm25, pm10 = mean([h["pm25"] for h in hs]), mean([h["pm10"] for h in hs])
+        pm25, pm10 = _scaled(mean([h["pm25"] for h in hs]), scale), _scaled(mean([h["pm10"] for h in hs]), scale)
         aqi, band = _aqi(pm25, pm10)
         if aqi is not None:
             out.append({"time": start.isoformat(), "pm25": _r(pm25), "aqi_cpcb": aqi, "band": band})
