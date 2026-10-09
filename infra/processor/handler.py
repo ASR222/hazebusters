@@ -1,7 +1,7 @@
 """S3 ObjectCreated on uploads/{job_id}.<ext> -> frames, causes, air, advice, audio -> result_json in DynamoDB.
 
 Never writes to uploads/ (that would re-trigger this function). Any error -> status=failed + error.
-Extension points: causes.py (ONNX models), advice.py (Bedrock/Strands). audio.py: Polly HI + EN -> audio/.
+Extension points: causes.py (ONNX models), advice.py (Bedrock via llm.py, template fallback). audio.py: Polly HI + EN -> audio/.
 """
 
 import json
@@ -55,7 +55,7 @@ def process(bucket: str, key: str, job_id: str) -> dict:
 
     air = air_for(lat, lon, os.environ.get("WAQI_TOKEN") or None, profile=profile)
     found = causes.detect(sampled)
-    text, sections = advice.build(air, profile)
+    text, sections = advice.build(air, profile, found, causes.AVAILABLE)
     spoken, audio_caveats = audio.synthesize(sections, job_id)
     return {
         "job_id": job_id,

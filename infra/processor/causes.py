@@ -6,6 +6,7 @@ never under uploads/) -> YOLO11n boxes + vehicle count. Causes never change the 
 
 import numpy as np
 
+AVAILABLE = False  # stub values must not be phrased as findings (advice.facts hides them)
 CAVEATS = ["Visible causes are placeholder values: the smoke/fire and vehicle models are not wired in yet."]
 
 

@@ -1,14 +1,20 @@
-"""Advice text (contract `advice`): template EN + HI keyed by decision.outdoor.
+"""Advice text (contract `advice`): Bedrock (llm.py) when BEDROCK_MODEL_ID is set, else / on any failure the
+EN + HI template keyed by decision.outdoor (advice.source = "bedrock" | "template").
 
-Extension point: Bedrock via Strands phrases the same computed numbers; this template stays the fallback.
+The model only phrases the facts built here (facts()); llm.validate rejects anything else.
 Health wording follows the CPCB category statements in backend/src/air/decision_rules.md; no new numbers.
 Times are written as spoken words at the source in both languages ("सुबह 9 बजे से दोपहर 12 बजे तक",
 "from 9 AM to 12 noon"), so the same text reads naturally on screen and in Polly; spoken_times() converts
 "HH:MM" left in free text (e.g. future Bedrock output). The CPCB-scale note lives in the result's caveats.
 """
 
+import json
 import re
 from datetime import datetime
+
+from cpcb_aqi import aqi_category
+
+import llm
 
 # outdoor -> (recommendation, health statement or None), each as (en, hi)
 TEMPLATES = {
@@ -26,6 +32,16 @@ AQI_SENTENCE = {"today": ("Today's AQI is {aqi}.", "आज हवा का AQI 
                 "tomorrow": ("The AQI right now is {aqi}.", "अभी हवा का AQI {aqi} है।")}
 TOMORROW = ("Tomorrow, ", "कल ")
 WINDOW = ("Best time: {span}.", "सबसे अच्छा समय: {span}।")
+
+# CPCB health statement per category (backend/src/air/decision_rules.md); the model may not go beyond it.
+CPCB_HEALTH = {
+    "Good": "Minimal impact",
+    "Satisfactory": "Minor breathing discomfort to sensitive people",
+    "Moderate": "Breathing discomfort to the people with lungs, asthma and heart diseases",
+    "Poor": "Breathing discomfort to most people on prolonged exposure",
+    "Very Poor": "Respiratory illness on prolonged exposure",
+    "Severe": "Affects healthy people and seriously impacts those with existing diseases",
+}
 
 # Period word by hour (24 h): 4-11 morning, 12-15 afternoon, 16-18 evening, 19-3 night.
 PERIODS = ((4, 11, "सुबह"), (12, 15, "दोपहर"), (16, 18, "शाम"))
@@ -90,7 +106,42 @@ def _lower_first(s: str) -> str:
     return s[:1].lower() + s[1:]
 
 
-def build(air: dict, profile: str) -> tuple[dict, dict[str, list[str]]]:
+def facts(air: dict, profile: str, causes: dict | None = None, causes_available: bool = False) -> dict:
+    """The only input the model sees: computed numbers and decisions, windows already in spoken form."""
+    d, a = air["decision"], air["air"]
+    category = aqi_category(a["aqi_cpcb"])
+    w = d["best_window"] if d["outdoor"] != "yes" else None
+    out = {
+        "aqi": a["aqi_cpcb"], "category": category, "health_statement_en": CPCB_HEALTH[category],
+        "outdoor": d["outdoor"], "for": d["for"], "profile": profile,
+        "best_window": {"en": english_range(_hm(w["start"]), _hm(w["end"])),
+                        "hi": hindi_range(_hm(w["start"]), _hm(w["end"]))} if w else None,
+        "source": a["used"], "confidence": a["confidence"],
+        "causes": {"available": False},
+    }
+    if causes_available and causes:
+        out["causes"] = {"available": True, "smoke": causes["smoke"]["present"], "fire": causes["fire"]["present"],
+                         "vehicle_count": causes["vehicle_count"]}
+    return out
+
+
+def build(air: dict, profile: str, causes: dict | None = None, causes_available: bool = False,
+          bedrock=None) -> tuple[dict, dict]:
+    """-> (contract `advice`, {"en": ..., "hi": ...} text or sections for speech).
+
+    Bedrock first (if configured); the template on any failure, with the reason logged."""
+    template, sections = template_advice(air, profile)
+    if not llm.model_id():
+        return template, sections
+    try:
+        out = llm.advise(facts(air, profile, causes, causes_available), bedrock)
+    except Exception as e:
+        print(json.dumps({"advice": "template_fallback", "reason": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+        return template, sections
+    return {"en": out["en"], "hi": out["hi"], "source": "bedrock"}, out
+
+
+def template_advice(air: dict, profile: str) -> tuple[dict, dict[str, list[str]]]:
     """-> (contract `advice`, {"en": sections, "hi": sections} for speech).
 
     Sections: AQI + recommendation, health statement, best window. `air`: output of air.combine.air_for."""
@@ -110,4 +161,4 @@ def build(air: dict, profile: str) -> tuple[dict, dict[str, list[str]]]:
 
 
 def generate(air: dict, profile: str) -> dict:
-    return build(air, profile)[0]
+    return template_advice(air, profile)[0]

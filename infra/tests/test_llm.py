@@ -1,0 +1,129 @@
+"""Bedrock advice with a fake Converse client: validated output is used, anything else falls back to the template."""
+
+import json
+import re
+import xml.dom.minidom
+
+import pytest
+from botocore.exceptions import ReadTimeoutError
+
+import advice
+import audio
+import llm
+
+WINDOW = {"start": "2026-10-10T09:00:00+05:30", "end": "2026-10-10T12:00:00+05:30"}
+AIR = {"air": {"aqi_cpcb": 134, "band": 1, "used": "modelled", "confidence": "low"},
+       "decision": {"for": "today", "outdoor": "limit", "best_window": WINDOW, "reason_code": "aqi_101_200"}}
+GOOD = {"en": "Today's AQI is 134, so keep outdoor activity short and light. People with lung or heart disease or "
+              "asthma may feel breathing discomfort. The best time is from 9 AM to 12 noon.",
+        "hi": "आज AQI 134 है, इसलिए बाहर की गतिविधि कम और हल्की रखें। फेफड़ों या दिल की बीमारी या दमा वाले लोगों को "
+              "साँस लेने में तकलीफ़ हो सकती है। सबसे अच्छा समय सुबह 9 बजे से दोपहर 12 बजे तक है।"}
+
+
+class FakeBedrock:
+    def __init__(self, text=None, exc=None, stop="end_turn"):
+        self.text, self.exc, self.stop, self.calls = text, exc, stop, []
+
+    def converse(self, **kw):
+        self.calls.append(kw)
+        if self.exc:
+            raise self.exc
+        return {"output": {"message": {"role": "assistant", "content": [{"text": self.text}]}},
+                "stopReason": self.stop, "usage": {"inputTokens": 1, "outputTokens": 1}, "metrics": {"latencyMs": 5}}
+
+
+@pytest.fixture(autouse=True)
+def model(monkeypatch):
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "in.anthropic.claude-haiku-4-5-20251001-v1:0")
+
+
+def run(fake):
+    return advice.build(AIR, "school", bedrock=fake)
+
+
+def test_good_json_is_used():
+    fake = FakeBedrock(json.dumps(GOOD, ensure_ascii=False))
+    out, speech = run(fake)
+    assert out == {**GOOD, "source": "bedrock"} and speech == GOOD
+    call = fake.calls[0]
+    assert call["modelId"] == "in.anthropic.claude-haiku-4-5-20251001-v1:0"
+    sent = json.loads(call["messages"][0]["content"][0]["text"])
+    assert sent["aqi"] == 134 and sent["outdoor"] == "limit" and sent["profile"] == "school"
+    assert sent["best_window"] == {"en": "from 9 AM to 12 noon", "hi": "सुबह 9 बजे से दोपहर 12 बजे तक"}
+    assert sent["health_statement_en"] == advice.CPCB_HEALTH["Moderate"]
+    assert sent["causes"] == {"available": False}  # stub causes never reach the model
+
+
+def test_fenced_json_is_accepted():
+    out, _ = run(FakeBedrock("```json\n" + json.dumps(GOOD, ensure_ascii=False) + "\n```"))
+    assert out["source"] == "bedrock"
+
+
+def _fallback(fake, capsys, reason):
+    out, speech = run(fake)
+    template, sections = advice.template_advice(AIR, "school")
+    assert out == template and out["source"] == "template" and speech == sections
+    log = capsys.readouterr().out
+    assert '"template_fallback"' in log and reason in log
+
+
+def test_bad_json_falls_back(capsys):
+    _fallback(FakeBedrock("Sure! Here is the advice: AQI 134..."), capsys, "not JSON")
+
+
+def test_missing_hindi_falls_back(capsys):
+    _fallback(FakeBedrock(json.dumps({"en": GOOD["en"]})), capsys, "missing or empty hi")
+
+
+def test_wrong_number_falls_back(capsys):
+    bad = {"en": GOOD["en"].replace("134", "143"), "hi": GOOD["hi"]}
+    _fallback(FakeBedrock(json.dumps(bad, ensure_ascii=False)), capsys, "AQI 134 missing from en")
+
+
+def test_invented_number_falls_back(capsys):
+    bad = {"en": GOOD["en"] + " Stay out for at most 30 minutes.", "hi": GOOD["hi"]}
+    _fallback(FakeBedrock(json.dumps(bad, ensure_ascii=False)), capsys, "numbers not in the facts: ['30']")
+
+
+def test_non_devanagari_hindi_falls_back(capsys):
+    bad = {"en": GOOD["en"], "hi": "Aaj AQI 134 hai."}
+    _fallback(FakeBedrock(json.dumps(bad)), capsys, "no Devanagari")
+
+
+def test_too_long_falls_back(capsys):
+    bad = {"en": GOOD["en"] + " x" * 400, "hi": GOOD["hi"]}
+    _fallback(FakeBedrock(json.dumps(bad, ensure_ascii=False)), capsys, "too long")
+
+
+def test_timeout_falls_back(capsys):
+    _fallback(FakeBedrock(exc=ReadTimeoutError(endpoint_url="https://bedrock-runtime")), capsys, "ReadTimeoutError")
+
+
+def test_max_tokens_falls_back(capsys):
+    _fallback(FakeBedrock(json.dumps(GOOD, ensure_ascii=False), stop="max_tokens"), capsys, "max_tokens")
+
+
+def test_no_model_id_uses_template_without_calling(monkeypatch):
+    monkeypatch.delenv("BEDROCK_MODEL_ID")
+    fake = FakeBedrock(json.dumps(GOOD, ensure_ascii=False))
+    out, _ = run(fake)
+    assert out["source"] == "template" and fake.calls == []
+
+
+def test_client_timeouts_and_retries():
+    cfg = llm.client()._client_config
+    assert cfg.connect_timeout == 8 and cfg.read_timeout == 8
+    assert cfg.retries == {"total_max_attempts": 2, "mode": "standard"}
+
+
+@pytest.mark.parametrize("text", [
+    GOOD["hi"],
+    "AQI 134 है | बाहर <कम> जाएँ & ध्यान रखें। समय: 09:00–12:00।",
+    "**AQI 134** है।\nबाहर \"कम\" जाएँ।।",
+])
+def test_ssml_safe_for_model_output(text):
+    ssml = audio.to_ssml(text, "hi")
+    assert "।" not in ssml and "|" not in ssml
+    body = ssml.removeprefix('<speak><prosody rate="90%">').removesuffix("</prosody></speak>")
+    assert re.sub(r'<break time="\d+ms"/>', "", body).count("<") == 0  # only our own tags
+    xml.dom.minidom.parseString(ssml)  # well-formed
