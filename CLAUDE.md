@@ -190,16 +190,18 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Sat:** quality gate + causes end-to-end; Grad-CAM; seasonal line; Bedrock/Strands advice (EN/HI) + Polly; PWA; deploy; ONNX; test with non-team users; cut anything not working by Sat night.
 - **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations incl. CAMS/Open-Meteo); blog; submit early.
 
-## 11. Status (Fri 9 Oct)
+## 11. Status (Fri 9 Oct, evening)
 
 Done (Thu): repo and branches (`ml/aqi-labels` → PR #1, `ml/traqid-loader`), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
-Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`. **`WAQI_TOKEN` in `.env` is empty** → needed for live WAQI calls.
-Remaining: WAQI token + Ranchi check, Bedrock model access, Polly, smoke/fire dataset, own test clips, final names.
+Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine) with 57 mocked tests; CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
+Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **modelled only → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed); best_window clipped to profile hours (school 07–17, worker 06–19, general 06–21), `no_window_today` if none. Details: `backend/src/air/decision_rules.md`.
+Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`. **`WAQI_TOKEN` in `.env` is empty.**
+Remaining: WAQI token + live test + Ranchi check, Bedrock model access, Polly, smoke/fire dataset choice, AWS skeleton, PWA, own test clips, final names.
 
 ## 12. Open items
 
-- Kickoff time and exact Sunday deadline (Schedule page / Discord).
+- Exact Sunday submission deadline (time) — Schedule page / Discord.
 - Final team + product names.
-- Live Ranchi station check (pitch wording).
-- Image-only vs multimodal (Friday comparison).
+- **WAQI live untested** (no token yet); includes the live Ranchi station check (pitch wording).
+- Owners for the PWA and the SAM/AWS deploy.
 - Later, for the semester project: native app, 3-stream ablation, own labelled Indian dataset.
