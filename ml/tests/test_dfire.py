@@ -25,10 +25,21 @@ def test_dhash_near_duplicate_close_and_different_image_far():
 
 def test_groups_are_connected_components():
     h = np.array([0b0000, 0b0001, 0b0011, 0xFFFF0000, 0xFFFF0001], dtype=np.uint64)
-    g = dfire.groups(h, max_dist=1)
+    g, _ = dfire.groups(h, max_dist=1)
     assert g[0] == g[1] == g[2]  # 0-1 and 1-2 are 1 bit apart -> chained
     assert g[3] == g[4] and g[3] != g[0]
-    assert len(set(dfire.groups(h, max_dist=0).tolist())) == 5
+    assert len(set(dfire.groups(h, max_dist=0)[0].tolist())) == 5
+
+
+def test_extra_links_respect_cap():
+    h = np.array([1, 2, 4, 8, 16, 32], dtype=np.uint64)  # all >= 2 bits apart
+    g, stats = dfire.groups(h, max_dist=0, extra_pairs=[(0, 1), (1, 2), (3, 4)], max_share=0.34)  # cap = 2 images
+    assert g[0] == g[1] and g[2] != g[0] and g[3] == g[4]
+    assert stats["extra_merged"] == 2 and stats["extra_skipped_by_cap"] == 1
+
+
+def test_aof_pairs_only_consecutive():
+    assert dfire.aof_pairs(["AoF00001.jpg", "WEB00002.jpg", "AoF00002.jpg", "AoF00004.jpg"]) == [(0, 2)]
 
 
 def test_class_ids_inferred_from_published_box_counts():

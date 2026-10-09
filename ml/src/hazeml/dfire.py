@@ -8,9 +8,10 @@ Venâncio et al. 2022). Columns: image{bytes}, label (YOLO lines "cls xc yc w h"
 Class ids are not documented in the D-Fire README; they're inferred from its published
 box counts (fire 14,692, smoke 11,865) and checked exactly.
 
-Grouping: 64-bit dHash per image; images within Hamming distance <= max_dist are linked and
-connected components become groups, so near-duplicates (e.g. consecutive video frames) never
-straddle splits. Split: StratifiedGroupKFold(20) on the 4-way label -> 14/3/3 folds = ~70/15/15.
+Grouping: 64-bit dHash per image; images within Hamming distance <= max_dist are linked, and
+consecutive AoF video frames (AoF<n>, AoF<n+1>) within distance <= SEQ_DIST are linked too, unless
+that would make a group larger than MAX_GROUP_SHARE of all images (skipped links are counted).
+Connected components become groups, so near-duplicates never straddle splits. Split: StratifiedGroupKFold(20) on the 4-way label -> 14/3/3 folds = ~70/15/15.
 Frozen to ml/splits/dfire.json (filenames, split, group only — no images or boxes).
 """
 
@@ -34,6 +35,8 @@ OUT = Path(__file__).resolve().parents[2] / "runs" / "dfire_split"
 PUBLISHED = {"boxes": {"fire": 14692, "smoke": 11865},
              "images": {"fire_only": 1164, "smoke_only": 5867, "fire_and_smoke": 4658, "none": 9838}}
 LABELS = ("clear", "smoke", "fire", "smoke_fire")
+SEQ_DIST = 15
+MAX_GROUP_SHARE = 0.10
 
 
 def root() -> Path:
@@ -77,10 +80,27 @@ def add_labels(rows: list[dict], ids: dict[str, int]) -> Counter:
     return Counter(r["label"] for r in rows)
 
 
-def groups(hashes: np.ndarray, max_dist: int, chunk: int = 1024) -> np.ndarray:
-    """Connected components of the graph 'Hamming(dHash) <= max_dist' (union-find)."""
+def hamming(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
+
+
+def aof_pairs(filenames: list[str]) -> list[tuple[int, int]]:
+    """Index pairs of consecutive AoF frames (AoF<n>.jpg, AoF<n+1>.jpg)."""
+    num = {}
+    for i, f in enumerate(filenames):
+        m = re.fullmatch(r"AoF(\d+)\.jpg", f)
+        if m:
+            num[int(m.group(1))] = i
+    return [(num[k], num[k + 1]) for k in sorted(num) if k + 1 in num]
+
+
+def groups(hashes: np.ndarray, max_dist: int, extra_pairs: list[tuple[int, int]] = (),
+           max_share: float | None = None, chunk: int = 1024) -> tuple[np.ndarray, dict]:
+    """Union-find over 'Hamming(dHash) <= max_dist' links plus `extra_pairs`.
+
+    Extra links that would create a group > max_share * n are skipped (counted in the stats)."""
     n = len(hashes)
-    parent = np.arange(n)
+    parent, size = np.arange(n), np.ones(n, dtype=int)
 
     def find(i):
         while parent[i] != i:
@@ -88,15 +108,28 @@ def groups(hashes: np.ndarray, max_dist: int, chunk: int = 1024) -> np.ndarray:
             i = parent[i]
         return i
 
+    def union(a, b, cap=None) -> str:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return "same"
+        if cap is not None and size[ra] + size[rb] > cap:
+            return "capped"
+        ra, rb = min(ra, rb), max(ra, rb)
+        parent[rb] = ra
+        size[ra] += size[rb]
+        return "merged"
+
     for s in range(0, n, chunk):
         d = np.bitwise_count(hashes[s:s + chunk, None] ^ hashes[None, :])
         for a, b in zip(*np.nonzero(d <= max_dist)):
-            a += s
-            if a < b:
-                ra, rb = find(a), find(b)
-                if ra != rb:
-                    parent[max(ra, rb)] = min(ra, rb)
-    return np.array([find(i) for i in range(n)])
+            if a + s < b:
+                union(a + s, b)
+    cap = int(max_share * n) if max_share else None
+    outcomes = [union(a, b, cap) for a, b in extra_pairs]
+    stats = {"extra_links": len(extra_pairs), "extra_merged": outcomes.count("merged"),
+             "extra_already_grouped": outcomes.count("same"), "extra_skipped_by_cap": outcomes.count("capped"),
+             "cap_images": cap}
+    return np.array([find(i) for i in range(n)]), stats
 
 
 def sizes_summary(g: np.ndarray) -> dict:
@@ -105,21 +138,20 @@ def sizes_summary(g: np.ndarray) -> dict:
             "largest_share": float(sizes.max() / len(g)), "images_in_groups_ge2": int(sizes[sizes > 1].sum())}
 
 
-def aof_consecutive_cross_split(rows: list[dict], split: dict[str, str]) -> dict:
-    """Leakage check: consecutive AoF frame numbers (n, n+1) that ended up in different splits."""
-    nums = {}
-    for r in rows:
-        m = re.fullmatch(r"AoF(\d+)\.jpg", r["filename"])
-        if m:
-            nums[int(m.group(1))] = r["filename"]
-    pairs = [(nums[k], nums[k + 1]) for k in nums if k + 1 in nums]
-    cross = sum(split[a] != split[b] for a, b in pairs)
-    return {"aof_images": len(nums), "consecutive_pairs": len(pairs), "pairs_in_different_splits": cross}
+def leak_check(rows: list[dict], split: dict[str, str]) -> dict:
+    """Consecutive AoF frame pairs in different splits, with their dHash distances."""
+    pairs = aof_pairs([r["filename"] for r in rows])
+    cross = [hamming(rows[a]["hash"], rows[b]["hash"]) for a, b in pairs
+             if split[rows[a]["filename"]] != split[rows[b]["filename"]]]
+    bins = [(0, 6), (6, 10), (10, 16), (16, 24), (24, 65)]
+    return {"aof_consecutive_pairs": len(pairs), "pairs_in_different_splits": len(cross),
+            "cross_split_distance_hist": {f"{lo}-{hi - 1}": sum(lo <= x < hi for x in cross) for lo, hi in bins},
+            "cross_split_distance_median": float(np.median(cross)) if cross else None}
 
 
 def cmd_sweep(rows) -> None:
     hashes = np.array([r["hash"] for r in rows], dtype=np.uint64)
-    res = {t: sizes_summary(groups(hashes, t)) for t in (0, 4, 6, 8, 10, 12)}
+    res = {t: sizes_summary(groups(hashes, t)[0]) for t in (0, 4, 6, 8, 10, 12)}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "sweep.json").write_text(json.dumps(res, indent=2) + "\n")
     for t, s in res.items():
@@ -138,7 +170,9 @@ def cmd_split(rows, max_dist: int, seed: int = 0) -> None:
         raise SystemExit("duplicate filenames")
 
     hashes = np.array([r["hash"] for r in rows], dtype=np.uint64)
-    g = groups(hashes, max_dist)
+    seq = [(a, b) for a, b in aof_pairs([r["filename"] for r in rows])
+           if hamming(rows[a]["hash"], rows[b]["hash"]) <= SEQ_DIST]
+    g, link_stats = groups(hashes, max_dist, seq, MAX_GROUP_SHARE)
     y = np.array([LABELS.index(r["label"]) for r in rows])
     fold = np.empty(len(rows), dtype=int)
     for k, (_, te) in enumerate(StratifiedGroupKFold(20, shuffle=True, random_state=seed).split(y, y, g)):
@@ -154,10 +188,12 @@ def cmd_split(rows, max_dist: int, seed: int = 0) -> None:
         "created": date.today().isoformat(),
         "class_ids": ids, "labels": list(LABELS),
         "label_rule": "smoke/fire flags = any box of that class; 'smoke_fire' = both; 'clear' = no boxes",
-        "grouping": {"hash": "dHash 64-bit (9x8 grayscale)", "max_hamming": max_dist} | sizes_summary(g),
+        "grouping": {"hash": "dHash 64-bit (9x8 grayscale)", "max_hamming": max_dist,
+                     "aof_sequence_links": {"max_hamming": SEQ_DIST, "max_group_share": MAX_GROUP_SHARE} | link_stats}
+                    | sizes_summary(g),
         "split_method": f"StratifiedGroupKFold(n_splits=20, shuffle=True, random_state={seed}) on 4-way label; folds 0-13 train, 14-16 val, 17-19 test",
         "counts": per_split,
-        "leakage_check": aof_consecutive_cross_split(rows, split),
+        "leakage_check": leak_check(rows, split),
         "files": {r["filename"]: [split[r["filename"]], group_ids[int(gi)]] for r, gi in zip(rows, g)},
     }
     SPLIT_FILE.write_text(json.dumps(payload, indent=1) + "\n")
