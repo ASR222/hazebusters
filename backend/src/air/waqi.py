@@ -11,6 +11,10 @@ WAQI field semantics (checked 9 Oct 2026):
   so we compute the distance ourselves from `data.city.geo` ([lat, lon]).
 - `data.time.iso` is the station's last update with its UTC offset.
 - WAQI values are real-time (hourly), not CPCB's 24-h averages; the result is "CPCB-style".
+- Error statuses (checked live 9 Oct 2026, valid token): Ranchi's geo feed returns `{"status": "nope",
+  "data": "can not connect"}` and `/feed/ranchi/` returns `{"status": "error", "data": "Unknown station"}`
+  while Delhi works, so those mean "no station here" (NoStationError), not an outage. A bad token gives
+  `"Invalid key"` (InvalidKeyError). HTTP errors and timeouts propagate from http.get_json unchanged.
 """
 
 import math
@@ -32,6 +36,17 @@ PM10_US = ((0, 50, 0, 54), (51, 100, 55, 154), (101, 150, 155, 254), (151, 200, 
 
 class WaqiError(RuntimeError):
     pass
+
+
+class NoStationError(WaqiError):
+    """WAQI has no station for this location (not an outage)."""
+
+
+class InvalidKeyError(WaqiError):
+    pass
+
+
+NO_STATION_MESSAGES = ("can not connect", "Unknown station")
 
 
 def us_aqi_to_conc(aqi: float, table) -> float:
@@ -64,7 +79,12 @@ def _num(iaqi: dict, key: str) -> float | None:
 def parse(payload: dict, lat: float, lon: float) -> dict | None:
     """-> contract `air.measured`, or None when the station has neither PM2.5 nor PM10."""
     if payload.get("status") != "ok":
-        raise WaqiError(f"WAQI error: {payload.get('data')}")
+        msg = payload.get("data")
+        if msg in NO_STATION_MESSAGES:
+            raise NoStationError(f"WAQI: {msg}")
+        if msg == "Invalid key":
+            raise InvalidKeyError(f"WAQI error: {msg}")
+        raise WaqiError(f"WAQI error: {msg}")
     data = payload["data"]
     iaqi = data.get("iaqi", {})
     us25, us10 = _num(iaqi, "pm25"), _num(iaqi, "pm10")

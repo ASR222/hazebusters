@@ -67,8 +67,17 @@ def test_waqi_parse_handles_missing_and_offline_values():
 
 
 def test_waqi_error_status_raises():
-    with pytest.raises(waqi.WaqiError, match="Invalid key"):
+    with pytest.raises(waqi.InvalidKeyError, match="Invalid key"):
         waqi.parse({"status": "error", "data": "Invalid key"}, *RANCHI)
+    with pytest.raises(waqi.WaqiError, match="Over quota"):
+        waqi.parse({"status": "error", "data": "Over quota"}, *RANCHI)
+
+
+@pytest.mark.parametrize("payload", [{"status": "nope", "data": "can not connect"},
+                                     {"status": "error", "data": "Unknown station"}])
+def test_waqi_no_station_statuses(payload):
+    with pytest.raises(waqi.NoStationError):
+        waqi.parse(payload, *RANCHI)
 
 
 # --- Open-Meteo -----------------------------------------------------------------------------
@@ -312,3 +321,50 @@ def test_caveats_have_no_duplicates_and_one_waqi_reason(monkeypatch):
     out = combine.air_for(*RANCHI, token=None, now=NOW)
     assert len(out["caveats"]) == len(set(out["caveats"]))
     assert [c for c in out["caveats"] if "WAQI" in c] == ["WAQI not queried (no WAQI_TOKEN)."]
+
+
+# --- WAQI failure modes: no station vs unavailable -------------------------------------------------
+
+
+def _waqi_returns(monkeypatch, waqi_result):
+    def fake_get_json(url, params=None, timeout=10):
+        if "waqi" not in url:
+            return openmeteo_payload()
+        if isinstance(waqi_result, Exception):
+            raise waqi_result
+        return waqi_result
+    monkeypatch.setattr(http, "get_json", fake_get_json)
+
+
+def test_no_station_caveat(monkeypatch):
+    _waqi_returns(monkeypatch, {"status": "nope", "data": "can not connect"})  # live Ranchi response
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    assert out["air"]["confidence"] == "low"
+    assert out["air"]["modelled"]["pm25"] == pytest.approx(30 * combine.CAMS_CORRECTION)
+    assert combine.NO_STATION_NOTE in out["caveats"]
+    assert not any("WAQI unavailable" in c for c in out["caveats"])
+
+
+def test_far_station_gets_no_station_caveat(monkeypatch):
+    _waqi_returns(monkeypatch, waqi_payload(geo=(22.80, 86.20)))  # ~107 km
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["measured"] is not None and out["air"]["used"] == "modelled"
+    assert combine.NO_STATION_NOTE in out["caveats"]
+    assert any("km away" in c for c in out["caveats"])
+
+
+def test_invalid_key_is_unavailable(monkeypatch):
+    _waqi_returns(monkeypatch, {"status": "error", "data": "Invalid key"})
+    out = combine.air_for(*RANCHI, token="bad", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    assert "WAQI unavailable (InvalidKeyError: WAQI error: Invalid key)." in out["caveats"]
+    assert combine.NO_STATION_NOTE not in out["caveats"]
+
+
+def test_timeout_is_unavailable(monkeypatch):
+    _waqi_returns(monkeypatch, TimeoutError("timed out"))
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    assert "WAQI unavailable (TimeoutError: timed out)." in out["caveats"]
+    assert combine.NO_STATION_NOTE not in out["caveats"]
