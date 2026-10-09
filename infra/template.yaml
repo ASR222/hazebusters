@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  HazeBusters skeleton: HTTP API (create/get job) -> presigned S3 upload -> container Lambda processor
+  (frames + stub causes + air from WAQI/CAMS + template advice) -> DynamoDB. Region: ap-south-1.
+
+Parameters:
+  WaqiToken:
+    Type: String
+    NoEcho: true
+    Description: WAQI API token (from .env, via samconfig.toml parameter_overrides)
+
+Globals:
+  Function:
+    Architectures: [x86_64]
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref JobsTable
+        # Name string, not !Ref UploadsBucket: avoids the bucket <-> processor circular dependency.
+        BUCKET_NAME: !Sub "${AWS::StackName}-uploads-${AWS::AccountId}"
+
+Resources:
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [content-type]
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-uploads-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT, GET]
+            AllowedHeaders: ["*"]
+            AllowedOrigins: ["*"]
+            MaxAge: 3000
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-uploads
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 7
+
+  CreateJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/create_job/
+      Handler: app.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 10
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - S3WritePolicy:
+            BucketName: !Sub "${AWS::StackName}-uploads-${AWS::AccountId}"
+      Events:
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs
+            Method: POST
+
+  GetJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/get_job/
+      Handler: app.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 10
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+      Events:
+        Get:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /jobs/{id}
+            Method: GET
+
+  ProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: 3008
+      Timeout: 300
+      EphemeralStorage:
+        Size: 2048
+      Environment:
+        Variables:
+          WAQI_TOKEN: !Ref WaqiToken
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - S3ReadPolicy:
+            BucketName: !Sub "${AWS::StackName}-uploads-${AWS::AccountId}"
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0  # the handler records failures itself; retries would reprocess the clip
+      Events:
+        Upload:
+          Type: S3
+          Properties:
+            Bucket: !Ref UploadsBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+    Metadata:
+      DockerContext: ..
+      Dockerfile: infra/processor/Dockerfile
+      DockerTag: python3.12-v1
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  BucketName:
+    Value: !Ref UploadsBucket
+  TableName:
+    Value: !Ref JobsTable
+  ProcessorFunctionName:
+    Value: !Ref ProcessorFunction
