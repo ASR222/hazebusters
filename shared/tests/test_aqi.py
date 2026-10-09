@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from hazeml.aqi import (
+from cpcb_aqi import (
     BANDS,
     CATEGORIES,
     aqi_band,

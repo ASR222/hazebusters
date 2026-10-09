@@ -29,6 +29,16 @@ wheels = [
 ]
 
 [[package]]
+name = "cpcb-aqi"
+version = "0.1.0"
+source = { editable = "../shared" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+
+[[package]]
 name = "cuda-bindings"
 version = "12.9.9"
 source = { registry = "https://pypi.org/simple" }
@@ -120,6 +130,7 @@ name = "hazeml"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cpcb-aqi" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "python-dotenv" },
@@ -135,6 +146,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cpcb-aqi", editable = "../shared" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
