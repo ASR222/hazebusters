@@ -1,16 +1,33 @@
-"""GET /jobs/{id} -> {job_id, status, result (parsed result_json or null), error}."""
+"""GET /jobs/{id} -> {job_id, status, result (parsed result_json or null), error, audio_urls}.
+
+`result` is stored exactly in the contract shape (audio holds S3 keys). `audio_urls` = fresh presigned GET URLs
+(1 h) for those keys, made on every read so nothing stale is stored in DynamoDB.
+"""
 
 import json
 import os
 
 import boto3
+from botocore.config import Config
 
-table = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION", "ap-south-1")).Table(os.environ["TABLE_NAME"])
+REGION = os.environ.get("AWS_REGION", "ap-south-1")
+BUCKET = os.environ["BUCKET_NAME"]
+URL_EXPIRY_S = 3600
+
+s3 = boto3.client("s3", region_name=REGION, config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+table = boto3.resource("dynamodb", region_name=REGION).Table(os.environ["TABLE_NAME"])
 
 
 def _resp(status: int, body: dict) -> dict:
     return {"statusCode": status, "headers": {"Content-Type": "application/json"},
             "body": json.dumps(body, ensure_ascii=False)}
+
+
+def audio_urls(result: dict | None) -> dict:
+    audio = (result or {}).get("audio") or {}
+    return {lang: s3.generate_presigned_url("get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=URL_EXPIRY_S)
+            if (key := audio.get(f"{lang}_key")) else None
+            for lang in ("hi", "en")}
 
 
 def handler(event, context):
@@ -21,4 +38,5 @@ def handler(event, context):
     if item is None:
         return _resp(404, {"error": "job not found"})
     result = json.loads(item["result_json"]) if item.get("result_json") else None
-    return _resp(200, {"job_id": job_id, "status": item["status"], "result": result, "error": item.get("error")})
+    return _resp(200, {"job_id": job_id, "status": item["status"], "result": result, "error": item.get("error"),
+                       "audio_urls": audio_urls(result)})

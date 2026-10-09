@@ -60,6 +60,10 @@ Resources:
             Status: Enabled
             Prefix: uploads/
             ExpirationInDays: 7
+          - Id: expire-audio
+            Status: Enabled
+            Prefix: audio/
+            ExpirationInDays: 7
 
   CreateJobFunction:
     Type: AWS::Serverless::Function
@@ -93,6 +97,10 @@ Resources:
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref JobsTable
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject  # presigned audio URLs are signed with this role
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
       Events:
         Get:
           Type: HttpApi
@@ -117,6 +125,13 @@ Resources:
             TableName: !Ref JobsTable
         - S3ReadPolicy:
             BucketName: !Sub "${AWS::StackName}-uploads-${AWS::AccountId}"
+        - Statement:
+            - Effect: Allow
+              Action: polly:SynthesizeSpeech
+              Resource: "*"
+            - Effect: Allow
+              Action: s3:PutObject  # audio only; never uploads/ (that prefix triggers this function)
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
       EventInvokeConfig:
         MaximumRetryAttempts: 0  # the handler records failures itself; retries would reprocess the clip
       Events:

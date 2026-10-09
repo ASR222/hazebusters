@@ -3,7 +3,8 @@
     python infra/e2e_test.py path/to/test.mp4 path/to/test.webm [--api URL] [--stack hazebusters]
 
 Per clip: POST /jobs (Ranchi, school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
-until done/failed (60 s) -> print the JSON and check it against backend/contract.json. Exit 1 on any failure.
+until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
+audio URL and check it's a non-empty mp3 (--save-audio DIR keeps the files). Exit 1 on any failure.
 """
 
 import argparse
@@ -64,7 +65,27 @@ def check(result: dict) -> list[str]:
     return errs
 
 
-def run(api: str, clip: Path) -> bool:
+def is_mp3(data: bytes) -> bool:
+    return data[:3] == b"ID3" or (len(data) > 1 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0)
+
+
+def check_audio(got: dict, clip: Path, save_dir: Path | None) -> list[str]:
+    url = (got.get("audio_urls") or {}).get("hi")
+    if not got["result"]["audio"]["hi_key"] or not url:
+        return [f"no Hindi audio (hi_key={got['result']['audio']['hi_key']!r}, url={'set' if url else None})"]
+    t0 = time.monotonic()
+    status, data = request("GET", url)
+    print(f"[{clip.name}] audio GET -> {status}, {len(data)} bytes in {time.monotonic() - t0:.2f} s")
+    if status != 200 or not data or not is_mp3(data):
+        return [f"audio not a non-empty mp3 (status {status}, {len(data)} bytes, head {data[:4]!r})"]
+    if save_dir:
+        out = save_dir / f"{clip.stem}_{got['job_id']}_hi.mp3"
+        out.write_bytes(data)
+        print(f"[{clip.name}] saved {out}")
+    return []
+
+
+def run(api: str, clip: Path, save_dir: Path | None = None) -> bool:
     ctype = TYPES[clip.suffix]
     t0 = time.monotonic()
     status, body = request("POST", f"{api}/jobs", json.dumps(
@@ -95,7 +116,7 @@ def run(api: str, clip: Path) -> bool:
     if got["status"] != "done":
         print(f"[{clip.name}] FAILED: {got['error']}")
         return False
-    errs = check(got["result"])
+    errs = check(got["result"]) + check_audio(got, clip, save_dir)
     print(f"[{clip.name}] checks: " + ("OK" if not errs else "; ".join(errs)))
     return not errs
 
@@ -105,9 +126,10 @@ def main() -> None:
     p.add_argument("clips", nargs="+", type=Path)
     p.add_argument("--api", help="HTTP API base URL (default: the stack's ApiUrl output)")
     p.add_argument("--stack", default="hazebusters")
+    p.add_argument("--save-audio", type=Path, help="directory to save the downloaded mp3s")
     args = p.parse_args()
     api = (args.api or api_url(args.stack)).rstrip("/")
-    results = [run(api, clip) for clip in args.clips]
+    results = [run(api, clip, args.save_audio) for clip in args.clips]
     sys.exit(0 if all(results) else 1)
 
 
