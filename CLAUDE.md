@@ -170,12 +170,14 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 
 ### 7.1 Deployed infra (`infra/`)
 - Stack **`hazebusters`**, region **ap-south-1**. Template `infra/template.yaml`; build/deploy from `infra/` with `sam build && sam deploy` (one Docker build at a time, foreground; redact the token from output).
-- API base URL: `https://cwiw19yv58.execute-api.ap-south-1.amazonaws.com` (`POST /jobs`, `GET /jobs/{id}`). Bucket `hazebusters-uploads-176423573148` (clips under `uploads/`, deleted after 7 days; the processor never writes there). Table `hazebusters-JobsTable-1NPBHNSJ7OEJ9`.
-- Processor = container Lambda (`infra/processor/`): frames ~1/s → `causes.py` (stub, ONNX later) → `air_for` → `advice.py` (EN/HI templates, Bedrock later) → `audio.py` (stub, Polly later).
+- API base URL: see team doc (`POST /jobs`, `GET /jobs/{id}`; `e2e_test.py` reads it from the stack outputs). Bucket `hazebusters-uploads-<account>`: clips under `uploads/`, audio under `audio/`, both deleted after 7 days; the processor never writes to `uploads/` (that prefix triggers it).
+- Processor = container Lambda (`infra/processor/`): frames ~1/s → `causes.py` (stub, ONNX later; `AVAILABLE = False` hides stub values from the model) → `air_for` → `advice.py` → `audio.py`.
+- **Advice:** Bedrock Converse, **`global.amazon.nova-2-lite-v1:0`** (`BEDROCK_MODEL_ID`; `llm.py`), template fallback (`advice.source = "bedrock" | "template"`). The model only gets computed facts (AQI, category + CPCB health statement, outdoor/for/profile, best window pre-written as spoken EN/HI, source, confidence). Validation before use, else template + logged reason: JSON only (```json fence tolerated; no text around it, no extra keys), en + hi non-empty, ≤ 700 chars, ≤ 4 sentences each, Hindi has Devanagari, AQI in both, every number already in the facts, no markdown/line breaks, no "होगी/होगा" in a Hindi health sentence. Timeouts 8 s, 1 retry.
+- **Anthropic models blocked:** the Marketplace subscription isn't permitted for `hackathon-dev` (`INVALID_PAYMENT_INSTRUMENT`). The Haiku 4.5 India profile ID is kept as a comment in the template.
+- **Audio:** Polly neural `Kajal`, hi-IN and en-IN in parallel, SSML (90% rate, breaks; "।"/"|" stripped) → `audio/{job_id}_{hi,en}.mp3`; result stores keys only, GetJob adds `audio_urls` (presigned GET, 1 h). A failed language → null key + "Hindi/English audio unavailable" caveat. hi-IN Kajal shows in `aws polly describe-voices` only with `--include-additional-language-codes`.
 - `infra/samconfig.toml` is **gitignored and holds the WAQI token** (`parameter_overrides`, written from `.env`; `WaqiToken` is a NoEcho parameter). Never commit or print it.
-- E2E test (needs 10 s clips, e.g. ffmpeg `testsrc`; don't commit clips): `python3 infra/e2e_test.py test.mp4 test.webm` → POST job (Ranchi, school) → PUT clip → poll → checks contract keys, ~10 frames, air numbers, EN/HI advice. Passed 9 Oct for mp4 + webm (cold start ~1.6 s init, ~3.6 s run).
-- **Bedrock: blocked** by AWS account verification (support case open) → `advice.source = "template"`; don't call Bedrock until it's resolved.
-- **Polly hi-IN works in ap-south-1:** `VoiceId=Kajal`, `Engine=neural`, `LanguageCode=hi-IN` (`aws polly describe-voices` lists it only with `--include-additional-language-codes`).
+- E2E test (needs 10 s clips, e.g. ffmpeg `testsrc`; don't commit clips): `python3 infra/e2e_test.py test.mp4 test.webm [--save-audio DIR]` → POST job (Ranchi, school) → PUT clip → poll → checks contract keys, ~10 frames, air numbers, EN/HI advice, both mp3s. Latest (9 Oct night, Nova): Bedrock 1.1–1.3 s, Polly HI+EN ~0.9 s, processor 3.4 s warm / 3.8 s cold (+1.3 s init), upload → result ~7 s (2 s polling).
+- Unit tests: `cd infra && uv run --no-project --with pytest --with boto3 pytest -q tests` (Bedrock/Polly/S3 faked).
 
 ## 8. Dev environment (Abhay's laptop)
 
@@ -206,12 +208,13 @@ Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_
 Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **whenever `used == modelled` → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed; helps Delhi/Patna, **hurts Hyderabad** — `ml/RESULTS.md` §2b); decision = worst slot over the profile's remaining hours today (school 07–17, worker 06–19, general 06–21), or tomorrow's hours after they end (`decision.for`); `no_window_today` / `no_window_tomorrow` if no "yes" slot. Details: `backend/src/air/decision_rules.md`.
 Done (Fri night): **WAQI token set and live-tested** (Delhi returns a station; Ranchi has none → `NoStationError` + caveat "No official monitoring station near this location; using CAMS model estimate."; invalid key / HTTP errors / timeouts → "WAQI unavailable"; a station > 25 km also gets the no-station caveat when the answer is modelled). Backend tests: 66 passing. **AWS skeleton deployed** (§7.1), e2e passing.
 Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`.
-Remaining: Bedrock (blocked, §7.1), Polly wiring in `audio.py`, smoke/fire dataset choice + ONNX models in `causes.py`, seasonal line, PWA, own test clips, final names.
+Done (Fri, late): advice from Bedrock Nova 2 Lite with validation + template fallback; Polly HI + EN audio; e2e passing with `advice.source = "bedrock"` (§7.1). Infra tests: 66 passing.
+Remaining: smoke/fire dataset choice + ONNX models in `causes.py`, seasonal line, PWA, own test clips, final names.
 
 ## 12. Open items
 
 - Exact Sunday submission deadline (time) — Schedule page / Discord.
 - Final team + product names.
-- **Bedrock blocked** by AWS account verification (support case open); templates until then.
+- Anthropic models on Bedrock blocked (Marketplace subscription not permitted for `hackathon-dev`); using Nova 2 Lite.
 - Owners for the PWA and the SAM/AWS deploy.
 - Later, for the semester project: native app, 3-stream ablation, own labelled Indian dataset.
