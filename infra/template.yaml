@@ -23,6 +23,11 @@ Resources:
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
+      # Stage-wide limit so a flood of requests can't fan out Bedrock/Polly costs. (Reserving processor concurrency
+      # isn't possible: the account's Lambda limit is 10, all of which must stay unreserved.)
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
       CorsConfiguration:
         AllowOrigins: ["*"]
         AllowMethods: [GET, POST, OPTIONS]
