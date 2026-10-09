@@ -75,5 +75,26 @@ Band confusion (rows = station band, columns = CAMS band; 0 = Good/Satisfactory,
 - **CAMS runs low**: about 0.8× the stations (median), and it **misses most bad days** — of the station days that were Very Poor/Severe, CAMS put only 67/201 (33%) in Delhi and 46/133 (35%) in Patna in that band. It almost never over-calls.
 - It follows the day-to-day ups and downs reasonably (r 0.71–0.79), so the shape of the forecast is useful; the level is biased low.
 - **Hyderabad's 94.8% is mostly base rate**: 97.1% of its days are band 0, so "always band 0" would score higher. Don't quote it as skill.
-- Product consequence: when the answer is **modelled only** (e.g. Ranchi), the decision can be too lenient on bad days. Keep confidence "low" there and say CAMS tends to under-read; a bias correction (e.g. ÷0.8) is possible but would need validation on cities other than these three.
+- Product consequence: when the answer is **modelled** (e.g. Ranchi), the raw CAMS decision can be too lenient on bad days → the backend now scales CAMS ×1.25 whenever `air.used == "modelled"` (see 2b for what that costs).
 - Caveats: city-day means smooth over local hotspots; stations sit in cities while a 45 km CAMS cell mixes in cleaner surroundings, which explains part of the low bias. Hyderabad and Patna have fewer stations per day (median 9 and 4; minimum 2 and 1).
+
+### 2b. With the ×1.25 correction (re-run Fri 9 Oct 2026, same days and stations)
+
+`validate_cams.py` now scores CAMS raw and ×1.25 (`CORRECTION`, = `CAMS_CORRECTION` in `backend/src/air/combine.py`). Source: `ml/runs/cams_validation/summary.json`. "VP/Severe caught" = station Very Poor/Severe days that CAMS also put in that band; "false alarms" = CAMS Very Poor/Severe on days the station wasn't.
+
+| city | CAMS | same 3-band | same 6-category | VP/Severe caught | VP/Severe false alarms | bias mean / median (µg/m³) | MAE | median ratio |
+|---|---|---|---|---|---|---|---|---|
+| Delhi | raw | 56.2% | 42.3% | 67 / 201 | 1 | −27.9 / −17.2 | 36.3 | 0.78 |
+| Delhi | ×1.25 | **63.2%** | 45.4% | **125 / 201** | 10 | −11.4 / −2.4 | 31.0 | 0.97 |
+| Hyderabad | raw | **94.8%** | **75.0%** | 0 / 2 | 0 | −6.6 / −6.9 | **9.5** | 0.79 |
+| Hyderabad | ×1.25 | 86.3% | 73.1% | 0 / 2 | 0 | +0.6 / −0.3 | 9.7 | 0.99 |
+| Patna | raw | 62.5% | 47.2% | 46 / 133 | 8 | −19.5 / −10.6 | 25.2 | 0.81 |
+| Patna | ×1.25 | **67.6%** | 50.8% | **80 / 133** | 20 | −5.1 / +0.3 | 22.0 | 1.01 |
+
+Band confusion with ×1.25 (rows = station, cols = CAMS): Delhi `[[199,104,1],[79,138,9],[7,69,125]]`, Hyderabad `[[620,90,0],[8,11,0],[2,0,0]]`, Patna `[[258,66,0],[98,156,20],[1,52,80]]`.
+
+**Verdict**
+- **The correction hurts Hyderabad.** Band agreement falls from 94.8% to 86.3% and 6-category agreement from 75.0% to 73.1%; MAE rises slightly (9.5 → 9.7). Cause: 90 of 710 Good/Satisfactory days are now called Moderate/Poor (raw: 21). In a clean city the ×1.25 pushes borderline days over the AQI-100 line, which turns "yes" into "limit".
+- **It helps Delhi and Patna**: band agreement +7.0 / +5.1 points, Very Poor/Severe caught 67 → 125 (Delhi) and 46 → 80 (Patna), MAE down. The price is more over-calls: Very Poor/Severe false alarms 1 → 10 (Delhi) and 8 → 20 (Patna), and in Delhi Good/Satisfactory days called Moderate/Poor rise 44 → 104.
+- Median bias goes to about zero in all three cities, but **this is in-sample**: the factor was chosen from these same three cities' ratios, so these numbers flatter it. It has not been checked on any other city.
+- Net for the product: the correction trades leniency on bad days for over-caution on clean days. For a "should the kids go out" decision that trade is defensible, but say so in the caveat/writeup rather than presenting ×1.25 as accurate. A city- or level-dependent correction would need more cities than we have.

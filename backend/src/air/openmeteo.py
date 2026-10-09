@@ -20,12 +20,12 @@ TIMEZONE = "Asia/Kolkata"
 def fetch(lat: float, lon: float) -> dict:
     return http.get_json(URL, {
         "latitude": lat, "longitude": lon, "hourly": "pm10,pm2_5",
-        "timezone": TIMEZONE, "forecast_days": 1, "domains": "cams_global",
+        "timezone": TIMEZONE, "forecast_days": 2, "domains": "cams_global",  # today + tomorrow
     })
 
 
 def parse_hourly(payload: dict) -> list[dict]:
-    """[{time: aware datetime (local), pm25, pm10}] for today, None where CAMS has no value."""
+    """[{time: aware datetime (local), pm25, pm10}] for today and tomorrow, None where CAMS has no value."""
     tz = timezone(timedelta(seconds=payload.get("utc_offset_seconds", 0)))
     h = payload["hourly"]
     return [
@@ -66,7 +66,7 @@ def modelled_now(hours: list[dict], now: datetime, scale: float = 1.0) -> dict |
 
 
 def forecast_3h(hours: list[dict], scale: float = 1.0) -> list[dict]:
-    """Today's 3-hour slots (00, 03, ... 21): mean PM per slot (x `scale`) -> CPCB-style AQI from PM2.5 and PM10."""
+    """3-hour slots (00, 03, ... 21 each day): mean PM per slot (x `scale`) -> CPCB-style AQI from PM2.5 and PM10."""
     slots: dict[datetime, list[dict]] = {}
     for h in hours:
         start = h["time"].replace(hour=h["time"].hour - h["time"].hour % 3)

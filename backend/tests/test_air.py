@@ -88,7 +88,7 @@ def test_openmeteo_request_params(monkeypatch):
     assert seen["url"] == openmeteo.URL
     assert seen["params"]["hourly"] == "pm10,pm2_5"
     assert seen["params"]["timezone"] == "Asia/Kolkata"
-    assert seen["params"]["forecast_days"] == 1
+    assert seen["params"]["forecast_days"] == 2  # today + tomorrow
 
 
 def test_modelled_now_uses_current_hour():
@@ -161,17 +161,62 @@ def test_decision_thresholds(aqi, outdoor):
     assert combine.decide(aqi)[0] == outdoor
 
 
-def slot(hour, aqi):
-    return {"time": NOW.replace(hour=hour, minute=0).isoformat(), "pm25": 0, "aqi_cpcb": aqi, "band": 0}
+def slot(hour, aqi, day=0):
+    t = NOW.replace(hour=hour, minute=0) + timedelta(days=day)
+    return {"time": t.isoformat(), "pm25": 0, "aqi_cpcb": aqi, "band": 0}
 
 
-def test_best_window_is_earliest_future_yes_slot():
-    forecast = [slot(6, 80), slot(9, 150), slot(12, 160), slot(15, 90), slot(18, 70)]
-    # 06-09 is already over at 10:20; 09-12 and 12-15 are "limit"; 15-18 is the first "yes".
-    assert combine.best_window(forecast, NOW) == {"start": "2026-10-09T15:00:00+05:30", "end": "2026-10-09T18:00:00+05:30"}
-    # The current slot counts while it is still running.
-    assert combine.best_window([slot(9, 60)], NOW)["start"].startswith("2026-10-09T09:00")
-    assert combine.best_window([slot(12, 250)], NOW) is None
+def hm(ts):
+    return ts[11:16]
+
+
+def test_decision_uses_worst_slot_until_end_of_hours():
+    # 10:20, school (07-17): slots overlapping 10:20-17:00 are 09 (80), 12 (150), 15 (90); 18 (250) is after hours.
+    d = combine.decision(60, [slot(9, 80), slot(12, 150), slot(15, 90), slot(18, 250)], NOW, "school")
+    assert d["for"] == "today"
+    assert (d["outdoor"], d["reason_code"]) == ("limit", "aqi_101_200")
+    assert (hm(d["best_window"]["start"]), hm(d["best_window"]["end"])) == ("10:20", "12:00")
+
+
+def test_current_reading_counts_inside_hours():
+    d = combine.decision(230, [slot(9, 60), slot(12, 60), slot(15, 60)], NOW, "school")
+    assert d["outdoor"] == "no" and d["best_window"] is not None
+
+
+def test_before_hours_uses_today_without_current_reading():
+    early = NOW.replace(hour=5, minute=0)
+    d = combine.decision(300, [slot(6, 80), slot(9, 90), slot(12, 90), slot(15, 90)], early, "school")
+    assert d["for"] == "today" and d["outdoor"] == "yes"
+    assert (hm(d["best_window"]["start"]), hm(d["best_window"]["end"])) == ("07:00", "09:00")
+
+
+def test_after_hours_switches_to_tomorrow():
+    evening = NOW.replace(hour=18, minute=30)
+    forecast = [slot(15, 50), slot(18, 50), slot(6, 80, 1), slot(9, 150, 1), slot(12, 90, 1), slot(15, 70, 1), slot(18, 400, 1)]
+    d = combine.decision(300, forecast, evening, "school")
+    assert d["for"] == "tomorrow"
+    assert d["outdoor"] == "limit"  # worst of tomorrow 07-17 is 150; today's 300 and tomorrow 18:00 don't count
+    assert d["best_window"] == {"start": "2026-10-10T07:00:00+05:30", "end": "2026-10-10T09:00:00+05:30"}
+
+
+@pytest.mark.parametrize("now_hour, day", [(10, "today"), (19, "tomorrow")])
+def test_no_window_reason_code(now_hour, day):
+    forecast = [slot(h, 250, d) for d in (0, 1) for h in range(0, 24, 3)]
+    d = combine.decision(250, forecast, NOW.replace(hour=now_hour), "school")
+    assert d["for"] == day and d["best_window"] is None and d["reason_code"] == f"no_window_{day}"
+
+
+@pytest.mark.parametrize("profile, expected", [("school", None), ("worker", ("18:00", "19:00")), ("general", ("18:00", "21:00"))])
+def test_evening_slot_depends_on_profile(profile, expected):
+    d = combine.decision(50, [slot(18, 70)], NOW.replace(hour=17, minute=30), profile)
+    w = d["best_window"] if d["for"] == "today" else None
+    assert (w and (hm(w["start"]), hm(w["end"]))) == expected
+
+
+def test_night_slots_never_count():
+    forecast = [slot(0, 20), slot(21, 20), slot(0, 20, 1), slot(21, 20, 1)]
+    for p in combine.PROFILE_WINDOWS:
+        assert combine.decision(20, forecast, NOW.replace(hour=5), p)["best_window"] is None
 
 
 def test_combine_uses_chosen_source_and_keeps_both():
@@ -217,37 +262,6 @@ def test_output_matches_contract_keys(monkeypatch):
 # --- profile windows, correction, caveats ------------------------------------------------------
 
 
-EARLY = NOW.replace(hour=5, minute=0)
-
-
-@pytest.mark.parametrize("profile, expected", [
-    ("school", ("07:00", "09:00")),   # 06-09 slot clipped to school hours 07-17
-    ("worker", ("06:00", "09:00")),
-    ("general", ("06:00", "09:00")),
-])
-def test_best_window_clipped_to_profile_hours(profile, expected):
-    w = combine.best_window([slot(6, 80)], EARLY, profile)
-    assert (w["start"][11:16], w["end"][11:16]) == expected
-
-
-@pytest.mark.parametrize("profile, expected", [("school", None), ("worker", ("18:00", "19:00")), ("general", ("18:00", "21:00"))])
-def test_evening_slot_depends_on_profile(profile, expected):
-    w = combine.best_window([slot(18, 70)], EARLY, profile)
-    assert (w and (w["start"][11:16], w["end"][11:16])) == expected
-
-
-def test_night_slots_never_count():
-    assert all(combine.best_window([slot(0, 20), slot(21, 20)], EARLY, p) is None for p in combine.PROFILE_WINDOWS)
-
-
-def test_no_window_today_reason_code():
-    late = NOW.replace(hour=17, minute=30)
-    out = combine.combine(meas(aqi=80, band=0), modl(aqi=80, band=0), [slot(15, 80), slot(18, 80)], late, profile="school")
-    assert out["decision"]["outdoor"] == "yes"
-    assert out["decision"]["best_window"] is None
-    assert out["decision"]["reason_code"] == "no_window_today"
-
-
 def test_unknown_profile_rejected():
     with pytest.raises(ValueError):
         combine.combine(meas(), modl(), [], NOW, profile="pilot")
@@ -267,11 +281,28 @@ def test_modelled_only_is_scaled_by_correction(monkeypatch):
     assert sum("scaled x1.25" in c for c in out["caveats"]) == 1
 
 
-def test_station_reading_disables_correction(monkeypatch):
+def test_far_station_still_gets_correction(monkeypatch):
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10:
                         waqi_payload(geo=(22.80, 86.20)) if "waqi" in url else openmeteo_payload())
     out = combine.air_for(*RANCHI, token="t", now=NOW)
-    assert out["air"]["used"] == "modelled"  # far station, but a reading exists
+    assert out["air"]["used"] == "modelled"  # station ~107 km away
+    assert out["air"]["measured"] is not None
+    assert out["air"]["modelled"]["pm25"] == pytest.approx(30 * combine.CAMS_CORRECTION)
+    assert sum("scaled x1.25" in c for c in out["caveats"]) == 1
+
+
+def test_stale_station_still_gets_correction(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10:
+                        waqi_payload(iso="2026-10-09T05:00:00+05:30") if "waqi" in url else openmeteo_payload())
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["used"] == "modelled" and out["air"]["modelled"]["pm25"] == pytest.approx(37.5)
+
+
+def test_near_fresh_station_disables_correction(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10:
+                        waqi_payload() if "waqi" in url else openmeteo_payload())
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["used"] == "measured"
     assert out["air"]["modelled"]["pm25"] == 30.0
     assert not any("scaled" in c for c in out["caveats"])
 

@@ -16,16 +16,18 @@ Verification status (9 Oct 2026): the Severe wording matches a CAQM NCR AQI bull
 
 **Our mapping (a product choice, not a CPCB rule):** "yes" while CPCB says impact is at most minor for sensitive people; "limit" (shorter, lighter outdoor activity) once sensitive groups are affected; "no" once most people are affected on prolonged exposure.
 
-## Best window (per profile)
+## Decision window (per profile)
 
-`best_window` = the earliest 3-hour forecast slot still left today whose AQI is "yes", clipped to the profile's outdoor hours (local time). If there is none, `best_window` is null and `reason_code` is `no_window_today`.
-
-| profile | hours |
+| profile | outdoor hours (local) |
 |---|---|
 | school | 07:00–17:00 |
 | worker | 06:00–19:00 |
 | general | 06:00–21:00 |
 
-## CAMS correction (modelled only)
+- Before or during today's hours → the window is today, from now (or from the start of the hours) to their end; `decision.for = "today"`. After today's hours → tomorrow's hours; `decision.for = "tomorrow"`.
+- `outdoor` = the rule above applied to the **worst** AQI in the window: every 3-hour forecast slot overlapping it, plus the current chosen AQI when we're inside the hours.
+- `best_window` = the earliest "yes" slot in the window, clipped to it; if none, `best_window` is null and `reason_code` is `no_window_today` / `no_window_tomorrow`.
 
-When there is no station reading, CAMS PM2.5/PM10 are multiplied by **1.25** before the AQI, the decision and the forecast (`CAMS_CORRECTION` in `combine.py`). Basis: CAMS daily PM2.5 ran at a median 0.78× (Delhi), 0.79× (Hyderabad) and 0.81× (Patna) of ground stations in 2023–24 (`ml/runs/cams_validation/summary.json`, `ml/RESULTS.md` §2). Validated on those three cities and on PM2.5 only; applying the same factor to PM10 is an assumption.
+## CAMS correction (whenever the answer is modelled)
+
+Whenever `air.used == "modelled"` (no station reading, or the station is > 25 km away or ≥ 3 h old), CAMS PM2.5/PM10 are multiplied by **1.25** before the AQI, the decision and the forecast (`CAMS_CORRECTION` in `combine.py`). Basis: CAMS daily PM2.5 ran at a median 0.78× (Delhi), 0.79× (Hyderabad) and 0.81× (Patna) of ground stations in 2023–24 (`ml/runs/cams_validation/summary.json`, `ml/RESULTS.md` §2). Validated on those three cities and on PM2.5 only; applying the same factor to PM10 is an assumption.

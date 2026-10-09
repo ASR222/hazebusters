@@ -14,7 +14,7 @@
     "confidence_reason": "..."
   },
   "forecast_today": [{"time": "...", "pm25": 0, "aqi_cpcb": 0, "band": 0}],
-  "decision": {"outdoor": "yes|limit|no", "best_window": {"start": "...", "end": "..."}, "reason_code": "..."},
+  "decision": {"for": "today|tomorrow", "outdoor": "yes|limit|no", "best_window": {"start": "...", "end": "..."}, "reason_code": "..."},
   "seasonal_line": "...",
   "causes": {
     "frames_used": 0,
