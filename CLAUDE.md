@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Environmental Hacks (Air track)
 
 > Handoff for Claude Code or any new AI chat session. Read this fully before helping.
-> Lives in the repo as `CLAUDE.md`. Last updated: Fri 9 Oct 2026 (pivot: no image-based AQI; air from WAQI + CAMS, §3/§4/§7).
+> Lives in the repo as `CLAUDE.md`. Last updated: Fri 9 Oct 2026, night (AWS skeleton deployed in ap-south-1, §7.1; WAQI live-tested, §11).
 > **Strategy is expected to change** as we build; when something here conflicts with what the
 > user says now, the user wins — then update this file.
 
@@ -141,7 +141,7 @@ Sub-index = linear interpolation within the row; **AQI = max(sub-index PM2.5, su
 
 ### 6.4 Pitch data
 - Line (true for this dataset): *"In this 546-station dataset, Jharkhand has 2 stations and none in Ranchi."* UrbanEmissions NCAP bulletins (2015–2023) also had no Ranchi.
-- **Before the demo, check WAQI live for a Ranchi station.** None → "no official monitor in Ranchi". One → "a city of 1.5M relies on a single recently added monitor".
+- **WAQI live check (9 Oct): no Ranchi station** (geo feed → `can not connect`, city search → `Unknown station`) → pitch: "no official monitor in Ranchi". Re-check right before the demo; if one appears → "a city of 1.5M relies on a single recently added monitor".
 
 ### 6.5 Live readings
 WAQI API (free token); backup OpenAQ v3. Sanity-check values (live CPCB data is unvalidated).
@@ -163,10 +163,19 @@ PWA uploads video ─► S3 ─(event)─► Lambda container image (ONNX: quali
 PWA fetches result ◄─ API Gateway ◄─ Lambda
 ```
 - Deploy with **SAM CLI**; image pushed to **ECR** (no Docker Hub account needed; base image `public.ecr.aws/lambda/python`). Skip SageMaker.
-- One region for everything — pick one where the Bedrock model is available (us-east-1 widest). Request model access early.
+- One region for everything: **ap-south-1** (Mumbai).
 - Free Tier + up to $200 credits; zero-spend / small budget alert set.
 - Show the flow on screen in the demo video.
 - Air logic lives in `backend/src/air/` (WAQI, Open-Meteo, combine); response shape in `backend/contract.json`. Open-Meteo is free for non-commercial use and needs CAMS + Open-Meteo attribution.
+
+### 7.1 Deployed infra (`infra/`)
+- Stack **`hazebusters`**, region **ap-south-1**. Template `infra/template.yaml`; build/deploy from `infra/` with `sam build && sam deploy` (one Docker build at a time, foreground; redact the token from output).
+- API base URL: `https://cwiw19yv58.execute-api.ap-south-1.amazonaws.com` (`POST /jobs`, `GET /jobs/{id}`). Bucket `hazebusters-uploads-176423573148` (clips under `uploads/`, deleted after 7 days; the processor never writes there). Table `hazebusters-JobsTable-1NPBHNSJ7OEJ9`.
+- Processor = container Lambda (`infra/processor/`): frames ~1/s → `causes.py` (stub, ONNX later) → `air_for` → `advice.py` (EN/HI templates, Bedrock later) → `audio.py` (stub, Polly later).
+- `infra/samconfig.toml` is **gitignored and holds the WAQI token** (`parameter_overrides`, written from `.env`; `WaqiToken` is a NoEcho parameter). Never commit or print it.
+- E2E test (needs 10 s clips, e.g. ffmpeg `testsrc`; don't commit clips): `python3 infra/e2e_test.py test.mp4 test.webm` → POST job (Ranchi, school) → PUT clip → poll → checks contract keys, ~10 frames, air numbers, EN/HI advice. Passed 9 Oct for mp4 + webm (cold start ~1.6 s init, ~3.6 s run).
+- **Bedrock: blocked** by AWS account verification (support case open) → `advice.source = "template"`; don't call Bedrock until it's resolved.
+- **Polly hi-IN works in ap-south-1:** `VoiceId=Kajal`, `Engine=neural`, `LanguageCode=hi-IN` (`aws polly describe-voices` lists it only with `--include-additional-language-codes`).
 
 ## 8. Dev environment (Abhay's laptop)
 
@@ -175,7 +184,7 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Docker Desktop** with WSL integration (the old `podman-docker` shim was removed — `docker` must be real Docker for SAM).
 - AWS CLI v2 configured with an **IAM user** (`hackathon-dev`, not root); SAM CLI installed; Node via nvm (LTS).
 - Claude Code: Desktop app **WSL session** on `~/hazebusters` (integrated terminal + file pane are unavailable in WSL sessions → use **Open in editor** = VS Code Remote-WSL for terminal/files; diff review works in Desktop). Commit attribution disabled in `~/.claude/settings.json` (`attribution.commit/pr = ""`).
-- `.gitignore`: `.env .venv/ data/ node_modules/ __pycache__/ .aws-sam/ runs/ *.onnx *.pt *.pth *.keras *.zip`
+- `.gitignore`: `.env .venv/ data/ node_modules/ __pycache__/ .aws-sam/ runs/ *.onnx *.pt *.pth *.keras *.zip samconfig.toml`
 
 ## 9. Team split
 
@@ -190,18 +199,19 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Sat:** quality gate + causes end-to-end; Grad-CAM; seasonal line; Bedrock/Strands advice (EN/HI) + Polly; PWA; deploy; ONNX; test with non-team users; cut anything not working by Sat night.
 - **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations incl. CAMS/Open-Meteo); blog; submit early.
 
-## 11. Status (Fri 9 Oct, evening)
+## 11. Status (Fri 9 Oct, night)
 
 Done (Thu): repo and branches (`ml/aqi-labels` → PR #1, `ml/traqid-loader`), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
 Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine) with 57 mocked tests; CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
 Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **whenever `used == modelled` → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed; helps Delhi/Patna, **hurts Hyderabad** — `ml/RESULTS.md` §2b); decision = worst slot over the profile's remaining hours today (school 07–17, worker 06–19, general 06–21), or tomorrow's hours after they end (`decision.for`); `no_window_today` / `no_window_tomorrow` if no "yes" slot. Details: `backend/src/air/decision_rules.md`.
-Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`. **`WAQI_TOKEN` in `.env` is empty.**
-Remaining: WAQI token + live test + Ranchi check, Bedrock model access, Polly, smoke/fire dataset choice, AWS skeleton, PWA, own test clips, final names.
+Done (Fri night): **WAQI token set and live-tested** (Delhi returns a station; Ranchi has none → `NoStationError` + caveat "No official monitoring station near this location; using CAMS model estimate."; invalid key / HTTP errors / timeouts → "WAQI unavailable"; a station > 25 km also gets the no-station caveat when the answer is modelled). Backend tests: 66 passing. **AWS skeleton deployed** (§7.1), e2e passing.
+Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`.
+Remaining: Bedrock (blocked, §7.1), Polly wiring in `audio.py`, smoke/fire dataset choice + ONNX models in `causes.py`, seasonal line, PWA, own test clips, final names.
 
 ## 12. Open items
 
 - Exact Sunday submission deadline (time) — Schedule page / Discord.
 - Final team + product names.
-- **WAQI live untested** (no token yet); includes the live Ranchi station check (pitch wording).
+- **Bedrock blocked** by AWS account verification (support case open); templates until then.
 - Owners for the PWA and the SAM/AWS deploy.
 - Later, for the semester project: native app, 3-stream ablation, own labelled Indian dataset.
