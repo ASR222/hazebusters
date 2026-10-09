@@ -52,6 +52,28 @@ Logistic regression, balanced class weights, standardised; C fixed (0.1 embeddin
 - The **random frame split inflates accuracy by ~30 points** (63.3% vs 33.5%) — a random split would have produced a convincing false result.
 - India/Nepal leave-one-city-out is **inverted** (clean cities called polluted and vice versa; Delhi 4.5%): each city is nearly one band, so the model learns the city. The per-fold majority baseline is degenerate there (held-out city's band is never the training majority); against 3-class chance (~33%) 20% is still below.
 
-## 2. CAMS (Open-Meteo) vs ground stations
+## 2. CAMS (Open-Meteo) vs ground stations, daily PM2.5, 2023–2024 (Fri 9 Oct 2026)
 
-_Pending — `ml/validate_cams.py`._
+Script: `ml/validate_cams.py` (`uv run python validate_cams.py`). Output: `ml/runs/cams_validation/summary.json` + `{city}_daily.csv`.
+Ground truth: the stations dataset (Kaggle "India AQI 2010–2024", CC BY-SA 4.0), 15-min PM2.5 → station-day mean (≥ 18 hours with data) → city-day mean over stations. CAMS: Open-Meteo air-quality API, `domains=cams_global` (0.4°), hourly PM2.5 at the mean station location, daily mean (≥ 18 hours). Bands: shared CPCB-style function on PM2.5 only.
+
+| city | stations | days | same 3-band | same 6-category | bias mean / median (CAMS − station, µg/m³) | median ratio CAMS/station | MAE | Pearson r | median PM2.5 station / CAMS |
+|---|---|---|---|---|---|---|---|---|---|
+| Delhi | 43 | 731 | 56.2% | 42.3% | −27.9 / −17.2 | 0.78 | 36.3 | 0.79 | 70 / 55 |
+| Hyderabad | 12 | 731 | 94.8% | 75.0% | −6.6 / −6.9 | 0.79 | 9.5 | 0.71 | 33 / 27 |
+| Patna | 4 | 731 | 62.5% | 47.2% | −19.5 / −10.6 | 0.81 | 25.2 | 0.79 | 68 / 49 |
+
+Band confusion (rows = station band, columns = CAMS band; 0 = Good/Satisfactory, 1 = Moderate/Poor, 2 = Very Poor/Severe):
+
+| city | station 0 → CAMS 0/1/2 | station 1 → CAMS 0/1/2 | station 2 → CAMS 0/1/2 |
+|---|---|---|---|
+| Delhi | 260 / 44 / 0 | 141 / 84 / 1 | 15 / 119 / **67** |
+| Hyderabad | 689 / 21 / 0 | 15 / 4 / 0 | 2 / 0 / 0 |
+| Patna | 304 / 20 / 0 | 159 / 107 / 8 | 5 / 82 / **46** |
+
+**Takeaways**
+- **CAMS runs low**: about 0.8× the stations (median), and it **misses most bad days** — of the station days that were Very Poor/Severe, CAMS put only 67/201 (33%) in Delhi and 46/133 (35%) in Patna in that band. It almost never over-calls.
+- It follows the day-to-day ups and downs reasonably (r 0.71–0.79), so the shape of the forecast is useful; the level is biased low.
+- **Hyderabad's 94.8% is mostly base rate**: 97.1% of its days are band 0, so "always band 0" would score higher. Don't quote it as skill.
+- Product consequence: when the answer is **modelled only** (e.g. Ranchi), the decision can be too lenient on bad days. Keep confidence "low" there and say CAMS tends to under-read; a bias correction (e.g. ÷0.8) is possible but would need validation on cities other than these three.
+- Caveats: city-day means smooth over local hotspots; stations sit in cities while a 45 km CAMS cell mixes in cleaner surroundings, which explains part of the low bias. Hyderabad and Patna have fewer stations per day (median 9 and 4; minimum 2 and 1).
