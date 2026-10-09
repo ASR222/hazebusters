@@ -51,7 +51,7 @@
 2. Record a 10 s clip with location.
 3. Air: nearest WAQI station (US AQI → µg/m³ → §5) plus the CAMS model value for the area via Open-Meteo (~45 km, µg/m³ → §5). Pick a source with the 25 km / 3 h rule. Confidence comes from agreement and distance.
 4. Decision for the profile from the AQI number plus today's 3-hourly forecast (outdoor yes/limit/no, best window).
-5. Clip → quality gate → EfficientNet-B0 smoke/fire/clear classifier + Grad-CAM, and YOLO11n smoke/fire boxes + vehicle count. Causes only; they never change the AQI.
+5. Clip → quality gate → EfficientNet-B0 smoke/fire/clear classifier + CAM heatmap, and YOLO11n smoke/fire boxes + vehicle count. Causes only; they never change the AQI.
 6. Seasonal line.
 7. Bedrock/Strands advice in EN/HI (template fallback), plus Polly Hindi audio.
 8. Optional report-burning draft.
