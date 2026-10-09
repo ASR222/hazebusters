@@ -55,8 +55,8 @@ def process(bucket: str, key: str, job_id: str) -> dict:
 
     air = air_for(lat, lon, os.environ.get("WAQI_TOKEN") or None, profile=profile)
     found = causes.detect(sampled)
-    text = advice.generate(air, profile)
-    spoken, audio_caveats = audio.synthesize(text, job_id)
+    text, hi_sections = advice.build(air, profile)
+    spoken, audio_caveats = audio.synthesize(hi_sections, job_id)
     return {
         "job_id": job_id,
         "status": "done",

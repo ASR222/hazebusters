@@ -8,7 +8,7 @@ import pytest
 import audio
 from conftest import INFRA
 
-ADVICE = {"en": "Today: ...", "hi": "आज: बाहर की गतिविधि सीमित रखें।", "source": "template"}
+HI = ["आज: बाहर की गतिविधि सीमित रखें।", "सबसे अच्छा समय: सुबह 9 बजे से दोपहर 12 बजे तक।"]
 
 
 class FakePolly:
@@ -32,17 +32,18 @@ class FakeS3:
 
 def test_success_writes_audio_key():
     polly, s3 = FakePolly(), FakeS3()
-    out, caveats = audio.synthesize(ADVICE, "job1", polly=polly, s3=s3, bucket="b")
+    out, caveats = audio.synthesize(HI, "job1", polly=polly, s3=s3, bucket="b")
     assert out == {"hi_key": "audio/job1.mp3", "en_key": None} and caveats == []
-    assert polly.calls == [{"Text": ADVICE["hi"], "VoiceId": "Kajal", "Engine": "neural",
+    assert polly.calls == [{"Text": audio.to_ssml(HI), "TextType": "ssml", "VoiceId": "Kajal", "Engine": "neural",
                             "LanguageCode": "hi-IN", "OutputFormat": "mp3"}]
+    assert polly.calls[0]["Text"].startswith('<speak><prosody rate="90%">')
     assert s3.puts == [{"Bucket": "b", "Key": "audio/job1.mp3", "Body": b"ID3fake-mp3", "ContentType": "audio/mpeg"}]
     assert not s3.puts[0]["Key"].startswith("uploads/")
 
 
 def test_polly_error_gives_null_keys_and_caveat():
     s3 = FakeS3()
-    out, caveats = audio.synthesize(ADVICE, "job1", polly=FakePolly(fail=True), s3=s3, bucket="b")
+    out, caveats = audio.synthesize(HI, "job1", polly=FakePolly(fail=True), s3=s3, bucket="b")
     assert out == {"hi_key": None, "en_key": None}
     assert caveats == ["Hindi audio unavailable"]
     assert s3.puts == []
@@ -65,3 +66,22 @@ def test_get_job_presigns_audio_key(get_job, monkeypatch):
     assert seen == [("get_object", {"Bucket": "test-bucket", "Key": "audio/job1.mp3"}, 3600)]
     assert get_job.audio_urls(None) == {"hi": None, "en": None}
     assert get_job.audio_urls({"audio": {"hi_key": None, "en_key": None}}) == {"hi": None, "en": None}
+
+
+# --- SSML ---------------------------------------------------------------------------------------
+
+
+def test_ssml_breaks_between_sentences_and_sections():
+    ssml = audio.to_ssml(["पहला वाक्य। दूसरा, तीसरा।", "अगला भाग।"])
+    assert ssml == ('<speak><prosody rate="90%">पहला वाक्य।<break time="450ms"/> दूसरा,<break time="200ms"/> '
+                    'तीसरा।<break time="600ms"/>अगला भाग।</prosody></speak>')
+
+
+def test_ssml_escapes_before_tags():
+    ssml = audio.to_ssml("A & B <x> 5 > 3")
+    assert "A &amp; B &lt;x&gt; 5 &gt; 3" in ssml
+    assert ssml.count("<") == ssml.count(">") == 4  # speak, prosody, /prosody, /speak
+
+
+def test_ssml_converts_leftover_clock_times():
+    assert "सुबह 9 बजे से दोपहर 12 बजे तक" in audio.to_ssml("सबसे अच्छा समय: 09:00–12:00।")
