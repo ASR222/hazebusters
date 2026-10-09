@@ -119,6 +119,8 @@ Sub-index = linear interpolation within the row; **AQI = max(sub-index PM2.5, su
   india-nepal/  "Air Pollution Image Dataset/Air Pollution Image Dataset/Combined_Dataset/"
                   All_img/ (use this only) + IND_and_Nep_AQI_Dataset.csv  (loader: ml/src/hazeml/india_nepal.py)
   pm25vision/   dropped — not used (safe to delete, 1.1 GB)
+  dfire_hf/     D-Fire (CC0) parquet from HF mirror badsaarow/d-fire, 21,527 imgs (ml/download_datasets.py); split: ml/splits/dfire.json
+  pyro_sdis/    Pyro-SDIS (Apache-2.0) parquet from pyronear/pyro-sdis, 12,378 imgs, smoke only, camera + date columns
   stations/     one folder per state, one CSV per station + stations.csv (8.4 GB)
   cpcb_2015_2020/  city_day, city_hour, station_day, station_hour, stations CSVs (Kaggle rohanrao/air-quality-data-in-india)
 ```
