@@ -10,3 +10,4 @@ runs/
 *.pth
 *.keras
 *.zip
+samconfig.toml
