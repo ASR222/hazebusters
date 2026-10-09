@@ -85,6 +85,30 @@ def test_markdown_falls_back(capsys, bad):
     _fallback(FakeBedrock(json.dumps({"en": bad, "hi": GOOD["hi"]}, ensure_ascii=False)), capsys, "markup")
 
 
+def test_too_many_sentences_falls_back(capsys):
+    bad = {"en": GOOD["en"] + " Masks help. Close windows.", "hi": GOOD["hi"]}  # 5 sentences
+    _fallback(FakeBedrock(json.dumps(bad, ensure_ascii=False)), capsys, "en has 5 sentences (> 4)")
+    bad = {"en": GOOD["en"], "hi": GOOD["hi"] + " पानी पिएँ। घर पर रहें।"}
+    _fallback(FakeBedrock(json.dumps(bad, ensure_ascii=False)), capsys, "hi has 5 sentences (> 4)")
+
+
+@pytest.mark.parametrize("word", ["होगी", "होगा"])
+def test_certain_health_effect_in_hindi_falls_back(capsys, word):
+    bad = {"en": GOOD["en"], "hi": GOOD["hi"].replace("तकलीफ़ हो सकती है", f"तकलीफ़ {word}")}
+    assert word in bad["hi"]
+    _fallback(FakeBedrock(json.dumps(bad, ensure_ascii=False)), capsys, "health effect as certain")
+
+
+def test_future_tense_outside_health_is_fine():
+    ok = {"en": GOOD["en"], "hi": GOOD["hi"] + " कल फिर से जानकारी दी जाएगी।"}
+    assert llm.validate(ok, advice.facts(AIR, "school")) == ok
+
+
+def test_sentence_split():
+    assert llm.sentences("AQI is 134. PM2.5 is high! Ok?") == ["AQI is 134.", "PM2.5 is high!", "Ok?"]
+    assert len(llm.sentences(GOOD["hi"])) == 3 and len(llm.sentences(GOOD["en"])) == 3
+
+
 def test_missing_hindi_falls_back(capsys):
     _fallback(FakeBedrock(json.dumps({"en": GOOD["en"]})), capsys, "missing or empty hi")
 

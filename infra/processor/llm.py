@@ -27,16 +27,20 @@ You get a JSON object of facts computed by our pipeline. Rules:
   activities indoors. If `for` is "tomorrow", the recommendation is for tomorrow and the AQI is the reading right now.
 - Use only numbers that appear in the facts. Never invent numbers, pollutant values, durations or forecasts.
 - Health: say nothing beyond `health_statement_en` (CPCB statement for this category). Do not add medical advice.
+  Health effects are always possible, never certain: "may" in English, "हो सकती है" in Hindi; never "will" / "होगी".
 - If `best_window` is given, mention it using exactly `best_window.en` in English and `best_window.hi` in Hindi
   (times are already written as spoken words; do not convert them to digits like 09:00).
-- If `confidence` is "low", you may say the reading is an estimate; do not explain models or stations otherwise.
+- Do not say the reading is an estimate and do not explain sources, models, stations or confidence (the app shows
+  those separately).
 - Mention visible causes only if `causes.available` is true and something is present.
 
 Hindi:
 - Simple, natural spoken Hindi, the way an Indian news reader would say it on air: short sentences, everyday words,
   correct grammar and gender agreement. Write it fresh in Hindi; do not translate the English word by word.
 - Devanagari script. Keep "AQI" in Latin letters. Use Western digits (0-9). End sentences with "।".
-- Address people with "आप". Prefer common words (हवा, बाहर, घर के अंदर, साँस, बच्चे, काम) over formal Sanskrit words.
+- Address people with "आप". Prefer common words (हवा, बाहर, घर के अंदर, साँस, बच्चे, काम) over formal Sanskrit words:
+  दिल (not हृदय), ज़्यादातर (not अधिकांश), तकलीफ़ (not असुविधा).
+- When mentioning an illness, always phrase it as "<illness> वाले लोगों को", e.g. "दमा या दिल की बीमारी वाले लोगों को".
 - Example of the style (different facts): "आज हवा का AQI 85 है। बाहर खेलना और काम करना ठीक है।"
 
 Output:
@@ -48,6 +52,11 @@ _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 _MARKUP = re.compile(r"[*#`|_\n]")
+MAX_SENTENCES = 4
+_SENTENCE = re.compile(r"[^.?!।]+[.?!।]*")
+# A Hindi sentence about health effects must not use the certain future ("होगी" / "होगा"); CPCB says "may".
+_HEALTH_HI = re.compile(r"साँस|सांस|तकलीफ़|तकलीफ|बीमारी|रोग|असुविधा|स्वास्थ्य|दमा|अस्थमा")
+_CERTAIN_HI = re.compile(r"होगी|होगा")
 
 _client = None
 
@@ -80,6 +89,12 @@ def parse(text: str) -> dict:
     return out
 
 
+def sentences(text: str) -> list[str]:
+    """Sentences split on . ? ! । (a "." inside a number like 2.5 doesn't end one)."""
+    text = re.sub(r"(\d)\.(\d)", r"\1<dot>\2", text)
+    return [x.strip().replace("<dot>", ".") for x in _SENTENCE.findall(text) if x.strip(" .?!।")]
+
+
 def validate(out: dict, facts: dict) -> dict:
     """-> {"en", "hi"} stripped, or raise AdviceRejected with the reason."""
     texts = {}
@@ -93,6 +108,11 @@ def validate(out: dict, facts: dict) -> dict:
         if m := _MARKUP.search(t):
             raise AdviceRejected(f"{lang} has markup or line breaks ({m[0]!r})")
         texts[lang] = t
+    for lang, t in texts.items():
+        if (n := len(sentences(t))) > MAX_SENTENCES:
+            raise AdviceRejected(f"{lang} has {n} sentences (> {MAX_SENTENCES})")
+    if bad := [x for x in sentences(texts["hi"]) if _HEALTH_HI.search(x) and _CERTAIN_HI.search(x)]:
+        raise AdviceRejected(f"hi states a health effect as certain: {bad[0]!r}")
     if not _DEVANAGARI.search(texts["hi"]):
         raise AdviceRejected("hi has no Devanagari")
     aqi = str(facts["aqi"])
