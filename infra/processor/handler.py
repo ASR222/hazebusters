@@ -68,6 +68,7 @@ def process(bucket: str, key: str, job_id: str) -> dict:
         "location": {"lat": lat, "lon": lon, "place": None},  # no reverse geocoding yet
         "air": air["air"],
         "forecast_today": air["forecast_today"],
+        "forecast_tomorrow": air["forecast_tomorrow"],
         "decision": air["decision"],
         "seasonal_line": None,  # seasonal lookup not wired yet
         "causes": found,

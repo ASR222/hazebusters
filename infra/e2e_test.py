@@ -55,6 +55,10 @@ def check(result: dict) -> list[str]:
     errs = key_diff(json.loads(CONTRACT.read_text()), result)
     if not 8 <= result["causes"]["frames_used"] <= 12:
         errs.append(f"frames_used = {result['causes']['frames_used']} (expected ~10)")
+    if not result["forecast_tomorrow"]:
+        errs.append("forecast_tomorrow empty")
+    if result["decision"]["for"] not in ("today", "tomorrow"):
+        errs.append(f"decision.for = {result['decision']['for']!r}")
     air = result["air"]
     if not isinstance(air["aqi_cpcb"], (int, float)):
         errs.append(f"air.aqi_cpcb = {air['aqi_cpcb']!r}")
