@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Environmental Hacks (Air track)
 
 > Handoff for Claude Code or any new AI chat session. Read this fully before helping.
-> Lives in the repo as `CLAUDE.md`. Last updated: Fri 9 Oct 2026 (pivot: no image-based AQI; air from WAQI + CAMS, §3/§4/§7).
+> Lives in the repo as `CLAUDE.md`. Last updated: Fri 9 Oct 2026, night (AWS skeleton deployed in ap-south-1, §7.1; WAQI live-tested, §11).
 > **Strategy is expected to change** as we build; when something here conflicts with what the
 > user says now, the user wins — then update this file.
 
@@ -143,7 +143,7 @@ Sub-index = linear interpolation within the row; **AQI = max(sub-index PM2.5, su
 
 ### 6.4 Pitch data
 - Line (true for this dataset): *"In this 546-station dataset, Jharkhand has 2 stations and none in Ranchi."* UrbanEmissions NCAP bulletins (2015–2023) also had no Ranchi.
-- **Before the demo, check WAQI live for a Ranchi station.** None → "no official monitor in Ranchi". One → "a city of 1.5M relies on a single recently added monitor".
+- **WAQI live check (9 Oct): no Ranchi station** (geo feed → `can not connect`, city search → `Unknown station`) → pitch: "no official monitor in Ranchi". Re-check right before the demo; if one appears → "a city of 1.5M relies on a single recently added monitor".
 
 ### 6.5 Live readings
 WAQI API (free token); backup OpenAQ v3. Sanity-check values (live CPCB data is unvalidated).
@@ -165,10 +165,27 @@ PWA uploads video ─► S3 ─(event)─► Lambda container image (ONNX: quali
 PWA fetches result ◄─ API Gateway ◄─ Lambda
 ```
 - Deploy with **SAM CLI**; image pushed to **ECR** (no Docker Hub account needed; base image `public.ecr.aws/lambda/python`). Skip SageMaker.
-- One region for everything — pick one where the Bedrock model is available (us-east-1 widest). Request model access early.
+- One region for everything: **ap-south-1** (Mumbai).
 - Free Tier + up to $200 credits; zero-spend / small budget alert set.
 - Show the flow on screen in the demo video.
 - Air logic lives in `backend/src/air/` (WAQI, Open-Meteo, combine); response shape in `backend/contract.json`. Open-Meteo is free for non-commercial use and needs CAMS + Open-Meteo attribution.
+
+### 7.1 Deployed infra (`infra/`)
+- Stack **`hazebusters`**, region **ap-south-1**. Template `infra/template.yaml`; build/deploy from `infra/` with `sam build && sam deploy` (one Docker build at a time, foreground; redact the token from output).
+- API base URL: see team doc (`POST /jobs`, `GET /jobs/{id}`; `e2e_test.py` reads it from the stack outputs). Bucket `hazebusters-uploads-<account>`: clips under `uploads/`, audio under `audio/`, both deleted after 7 days; the processor never writes to `uploads/` (that prefix triggers it).
+- Processor = container Lambda (`infra/processor/`): frames ~1/s → `causes.py` → `air_for` → `advice.py` → `audio.py`. Result passes through `forecast_today`, `forecast_tomorrow` and `decision` (incl. `decision.for`) from `air_for`.
+- **Smoke/fire in the processor (`causes.py`):** the ML run's `smokefire.onnx` + `head.npz` + `export_report.json` (from `ml/runs/smokefire/20261009-220554_efficientnet_b0_s0/`) are copied to `infra/processor/models/` (gitignored, allowed in `.dockerignore`, baked into the image). onnxruntime 1.31.0 (CPU), session loaded once per cold start. Preprocessing = ML eval path (RGB, whole frame squashed to 224×224 bilinear+antialias, /255, ImageNet mean/std); checked vs `eval_transform` on 16 D-Fire test images: probs within 0.0053, identical decisions. Per clip: prob = max over frames; present = ≥ 2 frames over threshold (≥ 1 if < 3 frames); thresholds smoke 0.359 / fire 0.667. Model ~0.2–0.4 s for 10 frames. Model failure → stub causes + caveat "Smoke check unavailable for this clip" (job still done).
+- **CAM overlay:** if smoke/fire is present, a CAM overlay (vendored numpy copy of `hazeml/cam.py`) of the best frame, ≤ 640 px wide, goes to `overlays/{job_id}.jpg` (7-day lifecycle); `causes.gradcam_key` holds the key and GetJob adds a presigned **`gradcam_url`** (1 h), like `audio_urls`.
+- **`causes.vehicle_count` is `null`** and `boxes` is `[]` until YOLO (`contract.json`: `"int|null"`).
+- **Causes in advice:** sent to Bedrock only if the model ran, as present + certainty ("possible" if prob < 0.6, else "likely"; no probabilities). Validation: no smoke/fire words unless present; "possible" must not sound definite; "likely" must be mentioned in both EN and HI (else template). The template has a cause line ("Smoke is visible in your clip; stay away from it." / "आपकी क्लिप में धुआँ दिख रहा है; उससे दूर रहें।"), so either path shows it. In the 10 Oct e2e Nova left smoke out → template used.
+- **Image / cold start:** image 1.24 GB (was 1.08 GB before onnxruntime + Pillow + model). Cold start (`Init Duration`) 1.8–6.9 s in our runs, but one fresh environment **hit Lambda's 10 s init limit** (`INIT_REPORT … Status: timeout`); Lambda re-ran init inside the invoke and the job still finished (13.3 s). If this recurs: lazy-load the session in the handler, slim the image, or provisioned concurrency (costs).
+- **Advice:** Bedrock Converse, **`global.amazon.nova-2-lite-v1:0`** (`BEDROCK_MODEL_ID`; `llm.py`), template fallback (`advice.source = "bedrock" | "template"`). The model only gets computed facts (AQI, category + CPCB health statement, outdoor/for/profile, best window pre-written as spoken EN/HI, source, confidence). Validation before use, else template + logged reason: JSON only (```json fence tolerated; no text around it, no extra keys), en + hi non-empty, ≤ 700 chars, ≤ 4 sentences each, Hindi has Devanagari, AQI in both, every number already in the facts, no markdown/line breaks, no "होगी/होगा" in a Hindi health sentence. Timeouts 8 s, 1 retry.
+- **Anthropic models blocked:** the Marketplace subscription isn't permitted for `hackathon-dev` (`INVALID_PAYMENT_INSTRUMENT`). The Haiku 4.5 India profile ID is kept as a comment in the template.
+- **Audio:** Polly neural `Kajal`, hi-IN and en-IN in parallel, SSML (90% rate, breaks; "।"/"|" stripped) → `audio/{job_id}_{hi,en}.mp3`; result stores keys only, GetJob adds `audio_urls` (presigned GET, 1 h). A failed language → null key + "Hindi/English audio unavailable" caveat. hi-IN Kajal shows in `aws polly describe-voices` only with `--include-additional-language-codes`.
+- **Protection:** HTTP API default-route throttling, burst 10 / 5 req/s. No reserved concurrency on the processor: the account's Lambda concurrency limit is 10 and Lambda keeps 10 unreserved (`put-function-concurrency` 5 was rejected); request a quota increase if needed.
+- `infra/samconfig.toml` is **gitignored and holds the WAQI token** (`parameter_overrides`, written from `.env`; `WaqiToken` is a NoEcho parameter). Never commit or print it.
+- E2E test (needs 10 s clips, e.g. ffmpeg `testsrc`; don't commit clips): `python3 infra/e2e_test.py test.mp4 test.webm smoke.mp4 --expect-smoke smoke.mp4 [--save-audio DIR]` → POST job (Ranchi, school) → PUT clip → poll → checks contract keys, ~10 frames, air numbers, `forecast_tomorrow`, `decision.for`, EN/HI advice, both mp3s, smoke present/absent as expected and a loading JPEG `gradcam_url` for smoke clips. Smoke test clip: 10 D-Fire **test-split** `smoke` images, 1 s each (scratchpad only, never in the repo). Latest (10 Oct): Bedrock ~0.9–1.0 s, smoke model 0.2–0.4 s, Polly HI+EN ~0.9 s, processor ~3.0–3.6 s warm, upload → result 4.5–6.6 s (2 s polling).
+- Unit tests: `cd infra && uv run --no-project --with pytest --with boto3 --with numpy --with pillow --with onnxruntime==1.31.0 pytest -q tests` (Bedrock/Polly/S3/ONNX session faked).
 
 ## 8. Dev environment (Abhay's laptop)
 
@@ -177,7 +194,7 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Docker Desktop** with WSL integration (the old `podman-docker` shim was removed — `docker` must be real Docker for SAM).
 - AWS CLI v2 configured with an **IAM user** (`hackathon-dev`, not root); SAM CLI installed; Node via nvm (LTS).
 - Claude Code: Desktop app **WSL session** on `~/hazebusters` (integrated terminal + file pane are unavailable in WSL sessions → use **Open in editor** = VS Code Remote-WSL for terminal/files; diff review works in Desktop). Commit attribution disabled in `~/.claude/settings.json` (`attribution.commit/pr = ""`).
-- `.gitignore`: `.env .venv/ data/ node_modules/ __pycache__/ .aws-sam/ runs/ *.onnx *.pt *.pth *.keras *.zip`
+- `.gitignore`: `.env .venv/ data/ node_modules/ __pycache__/ .aws-sam/ runs/ *.onnx *.pt *.pth *.keras *.zip samconfig.toml`
 
 ## 9. Team split
 
@@ -192,20 +209,23 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Sat:** quality gate + causes end-to-end; Grad-CAM; seasonal line; Bedrock/Strands advice (EN/HI) + Polly; PWA; deploy; ONNX; test with non-team users; cut anything not working by Sat night.
 - **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations incl. CAMS/Open-Meteo); blog; submit early.
 
-## 11. Status (Fri 9 Oct → early Sat 10 Oct)
+## 11. Status (Fri 9 Oct → Sat 10 Oct)
 
 Done (Thu): repo and branches (`ml/aqi-labels` → PR #1; `ml/traqid-loader` → PR #2, which also contains #1's commit — merge #1 first or close it), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
 Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine); CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
 Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **whenever `used == modelled` → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed; helps Delhi/Patna, **hurts Hyderabad** — `ml/RESULTS.md` §2b); decision = worst slot over the profile's remaining hours today (school 07–17, worker 06–19, general 06–21), or tomorrow's hours after they end (`decision.for`); `no_window_today` / `no_window_tomorrow` if no "yes" slot. Details: `backend/src/air/decision_rules.md`.
 Done (Fri night): `forecast_tomorrow`; D-Fire + Pyro-SDIS downloaded and extracted (`$DATA_DIR/dfire_hf`, `$DATA_DIR/pyro_sdis`) — **D-Fire came from the Hugging Face mirror `badsaarow/d-fire`** (the official OneDrive links block scripted downloads; counts match the README); D-Fire split v2 (no consecutive-frame leaks ≤ 15; **the 10% group cap was hit 4 times**); smoke/fire model trained + ONNX + CAM: **D-Fire test AP smoke 0.979 / fire 0.982; Pyro-SDIS smoke recall 13.4%, so it doesn't transfer yet** (`ml/RESULTS.md` §3).
-Tests: backend 62, shared 50, ml 33 (all passing).
-Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`. **`WAQI_TOKEN` in `.env` is empty.**
-Remaining: WAQI token + live test + Ranchi check, Bedrock model access, **Bedrock/Strands advice (EN/HI, template fallback)**, Polly, **seasonal lookup script + JSON** (§6.3), quality gate, YOLO11n (vehicles + smoke/fire boxes), AWS skeleton, PWA, **own test clips (the smoke model's real test)**, final names, **merging PRs #1 then #2**.
+Done (Fri night): **WAQI token set and live-tested** (Delhi returns a station; Ranchi has none → `NoStationError` + caveat "No official monitoring station near this location; using CAMS model estimate."; invalid key / HTTP errors / timeouts → "WAQI unavailable"; a station > 25 km also gets the no-station caveat when the answer is modelled). Backend tests: 66 passing. **AWS skeleton deployed** (§7.1), e2e passing.
+Done (Fri, late): advice from Bedrock Nova 2 Lite with validation + template fallback; Polly HI + EN audio; e2e passing with `advice.source = "bedrock"` (§7.1). Infra tests: 66 passing.
+Done (Sat early, infra): smoke/fire ONNX model + CAM overlay in the processor; likely smoke/fire always shown in advice; merged `origin/main` (forecast_tomorrow) into `infra/sam-skeleton` (§7.1).
+Tests (10 Oct, after the merge): backend 68, shared 50, infra 92 (ml 33 on main, not rerun here).
+Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`.
+Remaining: **seasonal lookup script + JSON** (§6.3), quality gate, YOLO11n (vehicles + smoke/fire boxes), PWA, **own test clips (the smoke model's real test)**, final names, **merging PRs #1 then #2**.
 
 ## 12. Open items
 
 - Exact Sunday submission deadline (time) — Schedule page / Discord.
 - Final team + product names.
-- **WAQI live untested** (no token yet); includes the live Ranchi station check (pitch wording).
+- Anthropic models on Bedrock blocked (Marketplace subscription not permitted for `hackathon-dev`); using Nova 2 Lite.
 - Owners for the PWA and the SAM/AWS deploy.
 - Later, for the semester project: native app, 3-stream ablation, own labelled Indian dataset.
