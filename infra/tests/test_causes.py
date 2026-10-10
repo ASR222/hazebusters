@@ -142,10 +142,32 @@ def test_model_error_falls_back_to_stub(model):
     assert out == causes.stub(5)
 
 
-def test_model_not_loaded_falls_back(monkeypatch):
+def test_model_not_loaded_falls_back(monkeypatch, tmp_path):
     monkeypatch.setattr(causes, "_session", None)
+    monkeypatch.setattr(causes, "MODEL_DIR", tmp_path)  # lazy load finds no model files
     out, cav, ran = causes.detect(frames(2), "job1", FakeS3(), "b")
     assert not ran and cav == [causes.UNAVAILABLE] and out["smoke"]["present"] is False
+    assert causes._load_error is not None
+
+
+def test_lazy_load_once_and_cached(monkeypatch):
+    calls = []
+    sess = FakeSession([[0.0, 0.0]])
+    monkeypatch.setattr(causes, "_session", None)
+
+    def fake_load(model_dir=None):
+        calls.append(1)
+        causes._session = sess
+    monkeypatch.setattr(causes, "load", fake_load)
+    monkeypatch.setattr(causes, "_head", {"weight": np.zeros((2, 1280), np.float32)})
+    causes.detect(frames(1), "a", FakeS3(), "b")
+    causes.detect(frames(1), "b", FakeS3(), "b")
+    assert calls == [1] and len(sess.inputs) == 2
+
+
+def test_handler_does_not_load_at_import():
+    src = (causes.MODEL_DIR.parent / "handler.py").read_text()
+    assert "causes.load()" not in src
 
 
 def test_load_failure_is_recorded(tmp_path, monkeypatch):

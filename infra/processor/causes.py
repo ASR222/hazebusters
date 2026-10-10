@@ -35,10 +35,14 @@ _head = None
 _load_error: Exception | None = None
 
 
-def load(model_dir: Path = MODEL_DIR) -> None:
-    """Load the ONNX session + CAM head once (cold start). A failure is kept and reported per clip."""
+def load(model_dir: Path | None = None) -> None:
+    """Load the ONNX session + CAM head into the module cache. Called lazily by detect() on the first invocation
+    (not at import: a slow cold start inside Lambda's 10 s init phase timed out and forced a re-init). A failure
+    is kept, reported per clip, and retried on the next invocation."""
     global _session, _head, _load_error
+    t0 = time.monotonic()
     try:
+        model_dir = model_dir or MODEL_DIR
         import onnxruntime as ort
 
         opts = ort.SessionOptions()
@@ -49,8 +53,10 @@ def load(model_dir: Path = MODEL_DIR) -> None:
         if _head["labels"] != LABELS:
             raise ValueError(f"head labels {_head['labels']} != {LABELS}")
         _load_error = None
+        print(json.dumps({"causes": "model_loaded", "ms": round((time.monotonic() - t0) * 1000)}))
     except Exception as e:
         _session, _head, _load_error = None, None, e
+        print(json.dumps({"causes": "model_load_failed", "reason": f"{type(e).__name__}: {e}"}))
 
 
 def preprocess(rgb_frames: list[np.ndarray]) -> np.ndarray:
@@ -109,6 +115,8 @@ def detect(bgr_frames: list[np.ndarray], job_id: str, s3, bucket: str) -> tuple[
     an overlay failure only leaves gradcam_key null."""
     t0 = time.monotonic()
     try:
+        if _session is None:
+            load()
         if _session is None:
             raise RuntimeError(f"model not loaded: {_load_error!r}")
         rgb = [np.ascontiguousarray(f[..., ::-1]) for f in bgr_frames]  # OpenCV decodes BGR

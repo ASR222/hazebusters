@@ -26,7 +26,7 @@ BUCKET = os.environ.get("BUCKET_NAME", "")
 
 s3 = boto3.client("s3", region_name=REGION, config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
 table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE)
-causes.load()  # ONNX session once per cold start; a load failure is reported per clip
+# The ONNX session is loaded lazily by causes.detect() on the first invocation, outside the 10 s init phase.
 
 
 def _set(job_id: str, **fields) -> None:
