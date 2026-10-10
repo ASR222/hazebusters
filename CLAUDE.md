@@ -1,7 +1,7 @@
 # PROJECT CONTEXT — Environmental Hacks (Air track)
 
 > Handoff for Claude Code or any new AI chat session. Read this fully before helping.
-> Lives in the repo as `CLAUDE.md`. Last updated: Thu 8 Oct 2026, 07:30 IST (before kickoff).
+> Lives in the repo as `CLAUDE.md`. Last updated: Fri 9 Oct 2026 (pivot: no image-based AQI; air from WAQI + CAMS, §3/§4/§7).
 > **Strategy is expected to change** as we build; when something here conflicts with what the
 > user says now, the user wins — then update this file.
 
@@ -15,6 +15,7 @@
 - Don't reuse anything from the old "AQI Vision" project (see §2).
 - Prefer small, working, committed steps over big rewrites. Commit after each working step.
 - User prefers concise, practical, informal answers.
+- **Background monitors produced fake results** (made-up runs with plausible metrics). Only report metrics read from files on disk (`ml/runs/...`); run long jobs in the foreground or detached and verify on disk.
 
 ## 1. Who / what
 
@@ -40,48 +41,59 @@
 
 ## 3. The product
 
-**Phone video → AQI estimate for places with no air-quality monitor, plus *why* the air is bad and *what to do*.**
-
-Pitch: *"Most of India has no air quality monitor. We turned every phone into one — and it tells you what to do."*
+**Product:** For a place with no monitor nearby: how bad the air likely is today, how far that number comes from, what's visibly polluting nearby, and what to do, in Hindi.
 
 - **Names:** repo folder is `hazebusters`. Confirm final **team name** and **product name** (not "AQI Vision"; candidate product name: SmogSight).
 - **Hero user:** a **school** deciding whether today's PE/assembly go outdoors. Second profile: outdoor/gig worker. Plus general.
 
-### User flow
-1. Pick profile (school / outdoor worker / general).
-2. Record/upload 5–15 s video in a PWA.
-3. Backend samples ~1 frame/s → **quality gate** rejects bad frames (night, no sky, blur, indoor).
-4. **CNN** → CPCB band per frame → averaged → band + **confidence**.
-5. **YOLO** → smoke/burning boxes + vehicle count.
-6. Context: **nearest live station reading + distance** (WAQI), and a **seasonal line** for the city if one exists (§6.3).
-7. **LLM** (Bedrock via Strands Agents) writes short advice for the profile, **English + Hindi**; template fallback.
-8. Optional: Grad-CAM heatmap; "report burning" draft linking to the official complaint channel (never claim auto-sending to government).
+**Flow:**
+1. Pick a profile.
+2. Record a 10 s clip with location.
+3. Air: nearest WAQI station (US AQI → µg/m³ → §5) plus the CAMS model value for the area via Open-Meteo (~45 km, µg/m³ → §5). Pick a source with the 25 km / 3 h rule. Confidence comes from agreement and distance.
+4. Decision for the profile from the AQI number plus today's 3-hourly forecast (outdoor yes/limit/no, best window).
+5. Clip → quality gate → EfficientNet-B0 smoke/fire/clear classifier + CAM heatmap, and YOLO11n smoke/fire boxes + vehicle count. Causes only; they never change the AQI.
+6. Seasonal line.
+7. Bedrock/Strands advice in EN/HI (template fallback), plus Polly Hindi audio.
+8. Optional report-burning draft.
 
-### Winning points
-- Works where monitors don't (data-shadow pitch, §6.4). Explains *why* and *what to do*.
-- **Honest ML:** date-based split, majority baseline, confidence, quality gate refusing bad input, out-of-domain test.
-- AWS clearly visible end-to-end. Demo "aha": film outdoors → result + cause + Hindi advice in ~30 s.
-- Avoid: feature bloat, shaky demo, claiming 95%+ accuracy.
+**No image-based AQI:** see §4 and ml/RESULTS.md.
 
-## 4. ML design (decided)
+**Pitch:** "Most places have no monitor nearby. We tell you how far your nearest reading really is, what's polluting the air around you, and what to do today, in Hindi."
 
-- **Training data: TRAQID only, daytime (`Day_or_Night == Day`), front view only.** The app's quality gate rejects night frames, so training matches real use and drops the noisiest half.
-- **Model:** pretrained **EfficientNet-B0 or MobileNetV3**, fine-tuned, 224 px, mixed precision, batch ~32 (reduce on OOM).
-- **Classes: 3 CPCB bands** — Good/Satisfactory (0–100), Moderate/Poor (101–300), Very Poor/Severe (301+). Use **class weights** (Very Poor/Severe is only ~12% of TRAQID).
-- **Multimodal variant (Fri):** CNN embedding ⊕ [mean saturation, contrast, dark-channel, brightness, temperature, humidity, hour, season, YOLO vehicle count] → MLP head. TRAQID only. **Compare vs image-only on the same split; keep the winner.** Image-only stays the runtime fallback.
-- **Never feed station AQI/PM as a model input** (it's the label; the model would copy it). Station reading is shown separately.
-- **No 3-stream CNN** (old project's design): too slow for video on Lambda, doubtful gain, too close to the old project. Optional Sat ablation only if ahead.
-- **YOLO:** yolov8n / yolo11n (Ultralytics, **AGPL** — repo stays open source), fine-tuned for smoke/fire; vehicles from pretrained COCO classes.
+**Credits:** CAMS + Open-Meteo (non-commercial).
+
+API response shape: `backend/contract.json` (`air.measured` can be null, e.g. Ranchi).
+
+## 4. ML design
+
+### Current image models (Fri) — causes only, never AQI
+- **Image → AQI is an experiment only, not in the product.** It failed on unseen days and cities (seed-0 CNN 32% vs 47.5% baseline; frozen-embedding / handcrafted probes at baseline; India/Nepal leave-one-city-out inverted). Numbers: `ml/RESULTS.md`.
+- **Smoke/fire classifier (trained Fri):** EfficientNet-B0, 2 sigmoid outputs (smoke, fire; "clear" = neither), whole frame squashed to 224×224, trained on **D-Fire** (CC0) with the dHash + AoF-sequence grouped split `ml/splits/dfire.json`. Code: `hazeml/train_smokefire.py`, `smokefire_data.py`, `export_onnx.py`. D-Fire test AP smoke 0.979 / fire 0.982 (thresholds from val: smoke 0.359, fire 0.667). **External Pyro-SDIS: smoke recall 13.4%, FPR 20.5%, AP 0.845 below the 0.868 base rate → doesn't transfer to distant wildfire plumes.** ONNX (features + logits) verified vs torch (max diff 2.1e-4). Heatmap = **CAM** in numpy (`hazeml/cam.py`) from the ONNX features + `head.npz`, not Grad-CAM (no gradients needed on Lambda). Details: `ml/RESULTS.md` §3.
+- **YOLO11n** (Ultralytics, **AGPL** — repo stays open source), fine-tuned for smoke/fire; vehicles from pretrained COCO classes. Output: smoke/fire boxes + vehicle count.
+- The quality gate (night, no sky, blur, indoor) runs before both models; their outputs feed `causes` in `backend/contract.json` and never change the AQI.
 - **LLM only phrases** numbers our pipeline computed. Never estimates AQI or invents numbers/health claims.
 - **Export to ONNX** for Lambda.
 - **Compute:** train locally on **RTX 4050 (6 GB, ~5 GB free)** in WSL; Kaggle/Colab as backup or for a teammate's parallel experiment. Optional speed-up: pre-resize TRAQID images to 256 px once into `$DATA_DIR/traqid_256/`.
+- **No 3-stream CNN** (old project's design): too slow for video on Lambda, doubtful gain, too close to the old project. Optional Sat ablation only if ahead.
 
-### Evaluation (be honest)
+### Image → AQI (experiment only; archived — see `ml/RESULTS.md`)
+- **Training data: TRAQID only, daytime (`Day_or_Night == Day`), front view only.** The app's quality gate rejects night frames, so training matches real use and drops the noisiest half. After the filter: **13,789 frames from only 17 calendar dates** (2022-10 → 2024-07). Loader: `ml/src/hazeml/traqid.py` (`load_traqid()`, reads only the CSV).
+- **Time-of-day confound:** the worst air (21–23 Dec 2023) was filmed on **morning drives**; most other frames are late afternoon (15:00–18:00). Very Poor/Severe share: **43% of frames before 11:00 vs 9% from 15:00** (July mornings are mostly clean, so it's not absolute). The CNN can learn "morning light = bad air" → use strong colour/brightness/contrast augmentation, report accuracy by morning vs evening, and lean on the OOD test + own clips.
+- **Model:** pretrained **EfficientNet-B0 or MobileNetV3**, fine-tuned, 224 px, mixed precision, batch ~32 (reduce on OOM).
+- **Classes: 3 CPCB bands** — Good/Satisfactory (0–100), Moderate/Poor (101–300), Very Poor/Severe (301+). Use **class weights** (Very Poor/Severe is only ~12% of TRAQID).
+- **Multimodal variant (Fri):** CNN embedding ⊕ [mean saturation, contrast, dark-channel, brightness, temperature, humidity, season, YOLO vehicle count] → MLP head. TRAQID only. **No `hour`** (it encodes the time-of-day confound above). **`season` is risky**: with 17 dates it nearly identifies the collection trip (all Very Poor/Severe-heavy dates are Winter/Dec) → include only if an ablation without it is also reported. **Compare vs image-only on the same split; keep the winner.** Image-only stays the runtime fallback.
+- **Never feed station AQI/PM as a model input** (it's the label; the model would copy it). Station reading is shown separately.
+
+### Image → AQI evaluation (be honest; archived)
 - **TRAQID split by calendar date** (from `created_at`): hold out ~20% of dates as test (plus a val split). Random splits leak (frames 5 s apart).
+  - **Frozen in `ml/splits/traqid_dates.json`** (committed; dates only). Chosen by exhaustive search for ~70/10/20 rows with each split's band mix close to overall: train 9,657 rows / 10 dates, val 1,361 / 2 (2022-10-26, 2024-03-06), test 2,771 / 5 (2023-01-30, 02-01, 02-08, 2023-12-21, 2024-03-02). Don't change it once results are reported; `python -m hazeml.traqid --make-split` regenerates.
+  - **Very Poor/Severe test recall rests mostly on one morning (21 Dec 2023, ~430 of ~460 band-2 test rows)** → expect it to swing; say so.
+  - **21 Dec is in test while 22–23 Dec (same smog episode) are in train** — no shared frames, but shared weather/lighting. Keeping the episode together left too little band 2 in train or test; disclose it in the writeup.
 - **India/Nepal = out-of-domain test set, not training.** Recompute CPCB labels (§5), evaluate the TRAQID-trained model on it. Pitch line: *"Trained in Hyderabad, tested on 7 other Indian cities."* If ever used for training, split by **moment** (location+date+hour), not image.
-- Report: **macro-F1**, accuracy vs **majority baseline** (≈52% on all TRAQID 3-band; **recompute after the day-only filter**), **within-one-band accuracy**, and **recall for Very Poor/Severe** separately.
+- Report: **macro-F1**, accuracy vs **majority baseline** (≈52% on all TRAQID 3-band; **≈47% after the day-only filter** — use 47% for our numbers; per split 47.2/47.4/47.5%), **within-one-band accuracy**, and **recall for Very Poor/Severe** separately.
 - Sanity check: agreement between our recomputed TRAQID labels and its own `aqi_cat`.
-- Rough expectation: ~65–80% on held-out TRAQID dates; lower out-of-domain and on our own clips. Collect 20–30 own clips/photos as a real-world test set.
+- **Result (Thu, EfficientNet-B0, seed 0, `ml/runs/20261008-174356_efficientnet_b0_s0/`): test accuracy 32.0% vs 47.5% majority baseline** (macro-F1 0.312, band-2 recall 57%, confidently wrong: mean confidence 0.80); val 22%. Same checkpoint on its **train dates: 89%** (82–100% per date) → no pipeline bug; **the model learns the day, not haze**. Frames within a date are highly correlated (a single band covers a median ~78% of a date's frames, 47–99%; ≥94% on 4 of 17 dates), so there are effectively ~17 independent samples. Seeds 1–2 not run (stopped). **Probes (Thu night) confirmed it:** no image signal transfers to unseen dates or cities → image→AQI dropped from the product. Details in `ml/RESULTS.md` (raw files in `ml/runs/probes/`, gitignored).
+- Old rough expectation (now unrealistic for TRAQID-only): ~65–80% on held-out TRAQID dates; lower out-of-domain and on our own clips. Collect 20–30 own clips/photos as a real-world test set.
 
 ## 5. Label mapping — CPCB-style AQI (first thing to code after kickoff)
 
@@ -104,8 +116,11 @@ Sub-index = linear interpolation within the row; **AQI = max(sub-index PM2.5, su
 ```
 ~/datasets/
   traqid/       front/<Image>.png, rear/<Image>.png (flat folders), TRAQID.csv
-  india-nepal/  Combined_Dataset/All_img/ (use this only) + IND_and_Nep_AQI_Dataset.csv
+  india-nepal/  "Air Pollution Image Dataset/Air Pollution Image Dataset/Combined_Dataset/"
+                  All_img/ (use this only) + IND_and_Nep_AQI_Dataset.csv  (loader: ml/src/hazeml/india_nepal.py)
   pm25vision/   dropped — not used (safe to delete, 1.1 GB)
+  dfire_hf/     D-Fire (CC0) parquet from HF mirror badsaarow/d-fire, 21,527 imgs (ml/download_datasets.py); split: ml/splits/dfire.json
+  pyro_sdis/    Pyro-SDIS (Apache-2.0) parquet from pyronear/pyro-sdis, 12,378 imgs, smoke only, camera + date columns
   stations/     one folder per state, one CSV per station + stations.csv (8.4 GB)
   cpcb_2015_2020/  city_day, city_hour, station_day, station_hour, stations CSVs (Kaggle rohanrao/air-quality-data-in-india)
 ```
@@ -142,16 +157,18 @@ Rejected: data.gov.in real-time AQI (no API, 502s, snapshot only); adityarc19/aq
 ```
 PWA (Amplify Hosting)
   └─► API Gateway ─► Lambda: presigned S3 URL
-PWA uploads video ─► S3 ─(event)─► Lambda container image (ONNX: quality gate + CNN + YOLO, frame sampling)
+PWA uploads video ─► S3 ─(event)─► Lambda container image (ONNX: quality gate + smoke/fire/clear CNN + YOLO11n, frame sampling)
                                      ├─► DynamoDB (results, history)
-                                     ├─► WAQI (nearest station) + weather API
-                                     └─► Bedrock via Strands Agents (advice EN + HI; template fallback)
+                                     ├─► WAQI (nearest station) + Open-Meteo Air Quality (CAMS global, ~45 km) for measured + modelled PM
+                                     ├─► Bedrock via Strands Agents (advice EN + HI; template fallback)
+                                     └─► Polly (Hindi audio of the advice) ─► S3 (audio key in the result)
 PWA fetches result ◄─ API Gateway ◄─ Lambda
 ```
 - Deploy with **SAM CLI**; image pushed to **ECR** (no Docker Hub account needed; base image `public.ecr.aws/lambda/python`). Skip SageMaker.
 - One region for everything — pick one where the Bedrock model is available (us-east-1 widest). Request model access early.
 - Free Tier + up to $200 credits; zero-spend / small budget alert set.
 - Show the flow on screen in the demo video.
+- Air logic lives in `backend/src/air/` (WAQI, Open-Meteo, combine); response shape in `backend/contract.json`. Open-Meteo is free for non-commercial use and needs CAMS + Open-Meteo attribution.
 
 ## 8. Dev environment (Abhay's laptop)
 
@@ -170,20 +187,25 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 
 ## 10. Day plan
 
-- **Thu (after kickoff):** `git init` + first commit (CLAUDE.md, .gitignore, README skeleton); create GitHub repo, add teammates. §5 label function + TRAQID day/front loader + date split; baseline image-only CNN; AWS skeleton (S3, Lambda, API); confirm WAQI + Bedrock.
-- **Fri:** video → frames → quality gate → CNN → averaged band + confidence end-to-end; YOLO; multimodal vs image-only; India/Nepal OOD numbers; ONNX.
-- **Sat:** PWA polish; LLM advice (EN/HI); nearest station + seasonal line; deploy; test with non-team users; cut anything not working by Sat night.
-- **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations); blog; submit early.
+- **Thu (done):** repo + first commit; §5 label function; TRAQID loader + frozen date split; baseline image→AQI CNN; probes → image→AQI dropped (`ml/RESULTS.md`).
+- **Fri:** air backend (`backend/src/air/`: WAQI + Open-Meteo/CAMS + combine + decision) with tests and live checks; `backend/contract.json`; optional CAMS-vs-stations validation; pick a smoke/fire dataset and start the smoke/fire/clear classifier + YOLO11n; AWS skeleton (S3, Lambda, API).
+- **Sat:** quality gate + causes end-to-end; Grad-CAM; seasonal line; Bedrock/Strands advice (EN/HI) + Polly; PWA; deploy; ONNX; test with non-team users; cut anything not working by Sat night.
+- **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations incl. CAMS/Open-Meteo); blog; submit early.
 
-## 11. Status (Thu 8 Oct, ~07:30 IST, pre-kickoff)
+## 11. Status (Fri 9 Oct → early Sat 10 Oct)
 
-Done: WSL basics, base packages, GPU/PyTorch, Docker, AWS CLI + SAM, Node, datasets downloaded, Claude attribution off, stations dataset checked.
-Remaining before kickoff: project files in `~/hazebusters` (CLAUDE.md, .gitignore, .env — **no git commit yet**), open the WSL session in Claude Desktop, optional 256 px pre-resize, WAQI token test + Ranchi check, Bedrock model access, own test photos/clips, final names.
+Done (Thu): repo and branches (`ml/aqi-labels` → PR #1; `ml/traqid-loader` → PR #2, which also contains #1's commit — merge #1 first or close it), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
+Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine); CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
+Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **whenever `used == modelled` → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed; helps Delhi/Patna, **hurts Hyderabad** — `ml/RESULTS.md` §2b); decision = worst slot over the profile's remaining hours today (school 07–17, worker 06–19, general 06–21), or tomorrow's hours after they end (`decision.for`); `no_window_today` / `no_window_tomorrow` if no "yes" slot. Details: `backend/src/air/decision_rules.md`.
+Done (Fri night): `forecast_tomorrow`; D-Fire + Pyro-SDIS downloaded and extracted (`$DATA_DIR/dfire_hf`, `$DATA_DIR/pyro_sdis`) — **D-Fire came from the Hugging Face mirror `badsaarow/d-fire`** (the official OneDrive links block scripted downloads; counts match the README); D-Fire split v2 (no consecutive-frame leaks ≤ 15; **the 10% group cap was hit 4 times**); smoke/fire model trained + ONNX + CAM: **D-Fire test AP smoke 0.979 / fire 0.982; Pyro-SDIS smoke recall 13.4%, so it doesn't transfer yet** (`ml/RESULTS.md` §3).
+Tests: backend 62, shared 50, ml 33 (all passing).
+Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`. **`WAQI_TOKEN` in `.env` is empty.**
+Remaining: WAQI token + live test + Ranchi check, Bedrock model access, **Bedrock/Strands advice (EN/HI, template fallback)**, Polly, **seasonal lookup script + JSON** (§6.3), quality gate, YOLO11n (vehicles + smoke/fire boxes), AWS skeleton, PWA, **own test clips (the smoke model's real test)**, final names, **merging PRs #1 then #2**.
 
 ## 12. Open items
 
-- Kickoff time and exact Sunday deadline (Schedule page / Discord).
+- Exact Sunday submission deadline (time) — Schedule page / Discord.
 - Final team + product names.
-- Live Ranchi station check (pitch wording).
-- Image-only vs multimodal (Friday comparison).
+- **WAQI live untested** (no token yet); includes the live Ranchi station check (pitch wording).
+- Owners for the PWA and the SAM/AWS deploy.
 - Later, for the semester project: native app, 3-stream ablation, own labelled Indian dataset.
