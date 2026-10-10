@@ -41,17 +41,67 @@
     }
   });
 
-  $("#video").addEventListener("change", (e) => {
-    const file = e.target.files[0];
-    $("#video-label").textContent = file ? `${file.name} (${(file.size / 1e6).toFixed(1)} MB)` : "Record or choose a clip";
-  });
+  // --- Clip ----------------------------------------------------------------
+
+  const MAX_MB = 100;
+  const WARN_S = 30;
+  const MAX_S = 60;
+  let clip = null;  // {file, duration: Promise<seconds | null>}
+
+  // Duration from a hidden <video>'s metadata; null if unknown (unreadable, or Infinity as some WebM recordings report).
+  function clipDuration(file) {
+    return new Promise((resolve) => {
+      const v = $("#video-probe");
+      const url = URL.createObjectURL(file);
+      const done = (d) => {
+        clearTimeout(timer);
+        v.onloadedmetadata = v.onerror = null;
+        v.removeAttribute("src");
+        v.load();
+        URL.revokeObjectURL(url);
+        resolve(Number.isFinite(d) && d > 0 ? d : null);
+      };
+      const timer = setTimeout(() => done(null), 10000);
+      v.onloadedmetadata = () => done(v.duration);
+      v.onerror = () => done(null);
+      v.src = url;
+    });
+  }
+
+  // -> error message (block) or null; sets the > 30 s warning.
+  function checkClip(file, duration) {
+    const warn = $("#video-warn");
+    warn.hidden = true;
+    if (file.size > MAX_MB * 1e6) return `Clip is ${(file.size / 1e6).toFixed(0)} MB; the limit is ${MAX_MB} MB. Record about 10 s.`;
+    if (duration != null && duration > MAX_S) return `Clip is ${Math.round(duration)} s; the limit is ${MAX_S} s. Trim it to ~10 s.`;
+    if (duration != null && duration > WARN_S) {
+      warn.textContent = `Clip is ${Math.round(duration)} s. Trim to ~10 s for a faster result.`;
+      warn.hidden = false;
+    }
+    return null;
+  }
+
+  document.querySelectorAll(".js-video").forEach((input) => input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    document.querySelectorAll(".js-video").forEach((other) => { if (other !== input) other.value = ""; });
+    formError("");
+    const label = `${file.name} (${(file.size / 1e6).toFixed(1)} MB`;
+    $("#video-label").textContent = `${label})`;
+    clip = { file, duration: clipDuration(file) };
+    const mine = clip;
+    const duration = await mine.duration;
+    if (clip !== mine) return;  // another clip was picked meanwhile
+    $("#video-label").textContent = `${label}${duration != null ? `, ${Math.round(duration)} s` : ""})`;
+    formError(checkClip(file, duration));
+  }));
 
   function pickedLocation() {
-    if (coords) return coords;
+    if (coords) return { ...coords, gps: true };
     const v = $("#city").value;
     if (!v) return null;
     const [lat, lon] = v.split(",").map(Number);
-    return { lat, lon };
+    return { lat, lon, city: $("#city").selectedOptions[0].textContent };
   }
 
   function formError(msg) {
@@ -60,17 +110,19 @@
     el.hidden = !msg;
   }
 
-  $("#job-form").addEventListener("submit", (e) => {
+  $("#job-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     formError("");
     const loc = pickedLocation();
-    const file = $("#video").files[0];
+    const file = clip && clip.file;
     if (!loc) return formError("Allow location or pick a city.");
     if (!file) return formError("Record or choose a video.");
     const type = window.api.contentType(file);
     if (!type) return formError("Unsupported video type. Use MP4, WebM or MOV.");
+    const blocked = checkClip(file, await clip.duration);
+    if (blocked) return formError(blocked);
     const profile = document.querySelector('input[name="profile"]:checked').value;
-    lastJob = { lat: loc.lat, lon: loc.lon, profile, file, type };
+    lastJob = { lat: loc.lat, lon: loc.lon, profile, file, type, picked: { city: loc.city, gps: !!loc.gps } };
     run(lastJob);
   });
 
@@ -118,7 +170,7 @@
       const body = await window.api.poll(job_id, () => {});
       step("analyse", "done");
       step("done", "done");
-      showResult(body);
+      showResult(body, job.picked);
     } catch (err) {
       step(current, "failed");
       $("#progress-error-msg").textContent = friendly(err);
@@ -138,8 +190,8 @@
 
   // --- Result --------------------------------------------------------------
 
-  function showResult(body) {
-    window.renderResult($("#result"), body);
+  function showResult(body, picked) {
+    window.renderResult($("#result"), body, picked);
     show("result");
   }
 
