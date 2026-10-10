@@ -5,7 +5,8 @@
 Per clip: POST /jobs (Ranchi, school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
 until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
 and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files) -> check smoke: clips
-named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url); all others must
+named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url) and Bedrock advice carrying the smoke
+line; all others must
 come back without smoke. Exit 1 on any failure.
 """
 
@@ -103,16 +104,20 @@ def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> l
         return [f"smoke.present = {c['smoke']['present']}, expected {expect}"]
     if not expect:
         return []
+    a = got["result"]["advice"]
+    errs = [] if a["source"] == "bedrock" else [f"advice.source = {a['source']!r}, expected 'bedrock'"]
+    if "smoke" not in a["en"].lower() or "धुआँ" not in a["hi"]:
+        errs.append("smoke cause line missing from advice")
     url = got.get("gradcam_url")
     if not c["gradcam_key"] or not url:
-        return [f"no overlay (gradcam_key={c['gradcam_key']!r}, url={'set' if url else None})"]
+        return errs + [f"no overlay (gradcam_key={c['gradcam_key']!r}, url={'set' if url else None})"]
     status, data = request("GET", url)
     print(f"[{clip.name}] overlay GET -> {status}, {len(data)} bytes")
     if status != 200 or data[:3] != b"\xff\xd8\xff":
-        return [f"overlay not a JPEG (status {status}, head {data[:4]!r})"]
+        return errs + [f"overlay not a JPEG (status {status}, head {data[:4]!r})"]
     if save_dir:
         (save_dir / f"{clip.stem}_{got['job_id']}_overlay.jpg").write_bytes(data)
-    return []
+    return errs
 
 
 def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False) -> bool:
