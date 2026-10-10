@@ -130,10 +130,34 @@
       <span class="${cls}">${label}${score}</span></div>`;
   }
 
+  // Quality-gate reject codes in plain words (gate checks: CLAUDE.md §4); unknown codes are shown with spaces.
+  const REJECT_WORDS = {
+    night: "too dark", dark: "too dark", too_dark: "too dark", low_light: "too dark",
+    blur: "too blurry", blurry: "too blurry", too_blurry: "too blurry", shaky: "too shaky",
+    no_sky: "no sky or street in view", sky: "no sky or street in view",
+    indoor: "looks like indoors", indoors: "looks like indoors",
+  };
+  const plainReason = (code) => REJECT_WORDS[String(code).toLowerCase()] || String(code).replace(/_/g, " ");
+
+  // The gate rejected the whole clip: every frame rejected, or a quality-gate caveat.
+  function gateBlocked(r) {
+    const c = r.causes;
+    if (c.frames_rejected > 0 && c.frames_used === 0) return true;
+    return (r.caveats || []).some((t) => /quality gate/i.test(String(t)));
+  }
+
   function causesCard(r, camUrl) {
     const c = r.causes;
     if (!c) return "";
     const reasons = (c.reject_reasons || []).filter(Boolean);
+    if (gateBlocked(r)) {
+      const words = [...new Set(reasons.map(plainReason))];
+      return `
+      <div class="card">
+        <h2>What's in your video</h2>
+        <p>Couldn't check this clip${words.length ? `: ${esc(words.join(", "))}` : ""}. Point the camera at the sky or street outdoors.</p>
+      </div>`;
+    }
     const frames = c.frames_used != null
       ? `<p class="muted">Frames analysed: ${esc(c.frames_used)}${c.frames_rejected ? `, rejected ${esc(c.frames_rejected)}` : ""}${reasons.length ? ` (${esc(reasons.join(", "))})` : ""}</p>`
       : "";
