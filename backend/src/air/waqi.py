@@ -49,7 +49,12 @@ class WaqiError(RuntimeError):
 
 
 class NoStationError(WaqiError):
-    """WAQI has no station for this location (not an outage)."""
+    """No official station within 25 km (not an outage). `nearest`: the nearest official station anywhere
+    ({code, city, dist_km, ...} from official_stations.json), or None."""
+
+    def __init__(self, msg: str, nearest: dict | None = None):
+        super().__init__(msg)
+        self.nearest = nearest
 
 
 class InvalidKeyError(WaqiError):
@@ -119,11 +124,16 @@ def parse(payload: dict, lat: float, lon: float) -> dict | None:
 # --- lookup: geo feed, then stations still reporting, then official stations that stopped reporting ------------
 
 
-def official_within(lat: float, lon: float, radius_km: float = RADIUS_KM) -> list[dict]:
-    """Official (CPCB) stations from our index within `radius_km`, nearest first, with dist_km."""
+def official_by_distance(lat: float, lon: float) -> list[dict]:
+    """All official (CPCB) stations from our index, nearest first, with dist_km."""
     stations = json.loads(STATIONS_FILE.read_text())["stations"]
     near = [{**s, "dist_km": round(haversine_km(lat, lon, s["lat"], s["lon"]), 1)} for s in stations]
-    return sorted((s for s in near if s["dist_km"] <= radius_km), key=lambda s: s["dist_km"])
+    return sorted(near, key=lambda s: s["dist_km"])
+
+
+def official_within(lat: float, lon: float, radius_km: float = RADIUS_KM) -> list[dict]:
+    """Official stations within `radius_km`, nearest first."""
+    return [s for s in official_by_distance(lat, lon) if s["dist_km"] <= radius_km]
 
 
 def _box(lat: float, lon: float, km: float) -> str:
@@ -174,9 +184,9 @@ def lookup(lat: float, lon: float, token: str) -> tuple[dict | None, dict | None
         m = parse(http.get_json(UID_URL.format(uid=s["uid"]), {"token": token}), lat, lon)
         if m is not None:
             return m, None
-    official = official_within(lat, lon)
-    if not official:
-        raise NoStationError("no official station within 25 km")
+    official = official_by_distance(lat, lon)
+    if not official or official[0]["dist_km"] > RADIUS_KM:
+        raise NoStationError("no official station within 25 km", official[0] if official else None)
     o = official[0]
     found = search_nearest(o["city"], lat, lon, token)
     return None, found or {"station": f"{o['code']}, {o['city']}", "dist_km": o["dist_km"], "updated_at": None}

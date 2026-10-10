@@ -31,8 +31,13 @@ def main() -> None:
                  "lat": round(float(r["latitude"]), 5), "lon": round(float(r["longitude"]), 5)}
                 for r in rows if r["latitude"] and r["longitude"]]
     out = {"source": "Kaggle omsandeeppatil/indian-aqi-stations (India AQI 2010-2024), stations.csv",
-           "licence": "CC BY-SA 4.0", "fields": "CPCB station code, city, state code, lat, lon",
-           "skipped_without_coordinates": len(rows) - len(stations), "stations": stations}
+           "source_url": "https://www.kaggle.com/datasets/omsandeeppatil/indian-aqi-stations",
+           "licence": "CC BY-SA 4.0", "licence_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+           "share_alike": "This file is a derivative and is shared under the same licence (CC BY-SA 4.0).",
+           "changes": (f"Kept columns station_code, city, state_code, latitude, longitude (renamed code, city, state, "
+                       f"lat, lon); coordinates rounded to 5 decimals; dropped {len(rows) - len(stations)} station(s) "
+                       "without coordinates. Built by backend/build_station_index.py."),
+           "fields": "CPCB station code, city, state code, lat, lon", "stations": stations}
     OUT.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
     print(f"{len(stations)} stations -> {OUT} ({OUT.stat().st_size / 1024:.0f} KB); skipped {len(rows) - len(stations)}")
 

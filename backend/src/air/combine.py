@@ -125,6 +125,17 @@ def _day(forecast: list[dict], now: datetime, offset: int) -> list[dict]:
     return [s for s in forecast if datetime.fromisoformat(s["time"]).date() == day]
 
 
+def _approx_km(d: float) -> str:
+    return f"~{round(d, -1):.0f} km" if d >= 50 else f"~{d:.0f} km"
+
+
+def no_station_note(nearest: dict | None) -> str:
+    """No official station within 25 km, naming the nearest one from our index (no final full stop)."""
+    if not nearest:
+        return NO_STATION_NOTE
+    return f"No official station within {MAX_STATION_KM:.0f} km; the nearest is {nearest['city']} ({_approx_km(nearest['dist_km'])})"
+
+
 def _age(updated_at: str, now: datetime) -> str:
     seconds = (now - datetime.fromisoformat(updated_at)).total_seconds()
     if seconds < 3600:
@@ -174,12 +185,13 @@ def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], 
     if modelled is not None:
         caveats.append("CAMS is a model value for a ~45 km grid cell, not a measurement.")
     why = station_reason(measured, nearest, waqi_note, now)
+    # The station/CAMS caveat goes first (the result page leads with the first caveat).
     if corrected:
-        caveats.append(f"{why}, {CORRECTION_NOTE}")
+        caveats.insert(0, f"{why}, {CORRECTION_NOTE}")
     elif why and used == "measured":  # CAMS unavailable, so a far/stale station is used anyway
-        caveats.append(f"{why}; it is used anyway because the CAMS model value is unavailable.")
+        caveats.insert(0, f"{why}; it is used anyway because the CAMS model value is unavailable.")
     elif why:
-        caveats.append(f"{why}.")
+        caveats.insert(0, f"{why}.")
     if not forecast:
         caveats.append("No CAMS forecast; the decision uses the current AQI only.")
     if measured is not None:
@@ -204,8 +216,8 @@ def air_for(lat: float, lon: float, token: str | None, now: datetime | None = No
             measured, nearest = waqi.lookup(lat, lon, token)
             if measured is None and nearest is None:
                 waqi_note = "Nearest WAQI station reports no PM2.5 or PM10."
-        except waqi.NoStationError:
-            waqi_note = NO_STATION_NOTE
+        except waqi.NoStationError as e:
+            waqi_note = no_station_note(e.nearest)
         except Exception as e:  # invalid key, HTTP error, timeout: a real "unavailable"
             waqi_note = f"WAQI unavailable ({type(e).__name__}: {e})."
     else:

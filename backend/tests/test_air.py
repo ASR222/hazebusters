@@ -362,7 +362,19 @@ def test_ranchi_no_official_station(monkeypatch):
     out = combine.air_for(*RANCHI, token="t", now=NOW)
     assert out["air"]["measured"] is None and out["air"]["used"] == "modelled" and out["air"]["confidence"] == "low"
     assert out["air"]["modelled"]["pm25"] == pytest.approx(30 * combine.CAMS_CORRECTION)
-    assert _station_caveats(out) == [f"No official monitoring station near this location, {combine.CORRECTION_NOTE}"]
+    assert _station_caveats(out) == [
+        f"No official station within 25 km; the nearest is Jamshedpur (~110 km), {combine.CORRECTION_NOTE}"]
+    assert out["caveats"][0] == _station_caveats(out)[0]  # first caveat (the page leads with it)
+
+
+def test_no_station_names_nearest_official():
+    assert waqi.official_within(*RANCHI) == []
+    n = waqi.official_by_distance(*RANCHI)[0]
+    assert (n["code"], n["city"], n["dist_km"]) == ("JH01", "Jamshedpur", 108.4)
+    assert combine.no_station_note(n) == "No official station within 25 km; the nearest is Jamshedpur (~110 km)"
+    assert combine.no_station_note({"city": "X", "dist_km": 31.6}) == \
+        "No official station within 25 km; the nearest is X (~32 km)"
+    assert combine.no_station_note(None) == combine.NO_STATION_NOTE
 
 
 def test_hyderabad_stations_stopped_reporting(monkeypatch):
@@ -485,3 +497,21 @@ def test_non_ist_open_meteo_payload_is_rejected(monkeypatch, offset):
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: payload)
     with pytest.raises(ValueError, match="no air data"):  # no token + rejected CAMS -> nothing to answer with
         combine.air_for(*RANCHI, token=None, now=UTC_1230)
+
+
+def test_station_caveat_is_first(monkeypatch):
+    cases = [(NOPE, RANCHI), ({"status": "error", "data": "Invalid key"}, RANCHI),
+             (waqi_payload(geo=(22.80, 86.20)), RANCHI), (waqi_payload(iso="2026-10-09T05:00:00+05:30"), RANCHI)]
+    for geo, where in cases:
+        _route(monkeypatch, geo)
+        out = combine.air_for(*where, token="t", now=NOW)
+        assert "scaled x1.25" in out["caveats"][0], out["caveats"]
+    _route(monkeypatch, waqi_payload())  # usable station: no station caveat, CPCB note first
+    assert combine.air_for(*RANCHI, token="t", now=NOW)["caveats"][0].startswith("CPCB-style AQI")
+
+
+def test_lookup_raises_with_nearest_for_ranchi(monkeypatch):
+    _route(monkeypatch, NOPE)
+    with pytest.raises(waqi.NoStationError) as e:
+        waqi.lookup(*RANCHI, "t")
+    assert e.value.nearest["city"] == "Jamshedpur" and e.value.nearest["dist_km"] == 108.4
