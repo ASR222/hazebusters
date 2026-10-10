@@ -3,6 +3,7 @@
     uv run python -m hazeml.train_smokefire --smoke                      # tiny end-to-end check
     uv run python -m hazeml.train_smokefire                              # full run
     uv run python -m hazeml.train_smokefire --eval-only runs/smokefire/<run>/best.pt
+    uv run python -m hazeml.train_smokefire --init runs/smokefire/<run>/best.pt --pyro-negatives   # hard-negative fine-tune
 
 Early stopping on val mean AP. After training: per-label thresholds = max F1 on val; reports on
 D-Fire test and on Pyro-SDIS (external, smoke only, grouped by camera) -> report.json / report.md.
@@ -24,6 +25,7 @@ from torch.utils.data import DataLoader
 from hazeml.data import SQUASH_PREPROCESS, MultiLabelImages, eval_transform, smokefire_train_transform
 from hazeml.evaluate import predict
 from hazeml.model import build_model, param_groups
+from hazeml.pyro_split import SPLIT_FILE as PYRO_SPLIT
 from hazeml.smokefire_data import load_dfire, load_pyro
 from hazeml.train import Logger, cosine_with_warmup, fit_batch_size, seed_everything
 
@@ -168,6 +170,75 @@ def to_markdown(rep: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- hard negatives (Pyro-SDIS, site-grouped split) ---------------------------------------------------
+
+
+def pyro_by_split() -> pd.DataFrame:
+    split = json.loads(PYRO_SPLIT.read_text())["cameras"]
+    d = load_pyro()
+    return d.assign(split=d["camera"].map(split), fire=0)
+
+
+def as_negatives(df: pd.DataFrame) -> pd.DataFrame:
+    """Pyro rows -> D-Fire-like rows labelled smoke=0, fire=0 (only call on smoke == 0 rows)."""
+    assert (df["smoke"] == 0).all()
+    return pd.DataFrame({"path": df["path"], "smoke": 0, "fire": 0, "source": "pyro_neg"})
+
+
+def compare_hardneg(models: dict[str, Path], out: Path, workers: int = 3, smoke: bool = False) -> dict:
+    """Same procedure for every model: thresholds = max F1 on D-Fire val + val-site Pyro negatives;
+    report D-Fire test, FPR on held-out-site Pyro negatives, recall on held-out-site Pyro positives (info)."""
+    device = torch.device("cuda")
+    d = load_dfire()
+    dval, dtest = d[d["split"] == "val"].reset_index(drop=True), d[d["split"] == "test"].reset_index(drop=True)
+    py = pyro_by_split()
+    pval_neg = py[(py["split"] == "val") & (py["smoke"] == 0)].reset_index(drop=True)
+    ptest = py[py["split"] == "test"].reset_index(drop=True)
+    if smoke:
+        dval, dtest, ptest = (x.sample(min(len(x), 128), random_state=0).reset_index(drop=True) for x in (dval, dtest, ptest))
+        pval_neg = pval_neg.sample(min(len(pval_neg), 64), random_state=0).reset_index(drop=True)
+    y_val = np.r_[dval[list(LABELS)].to_numpy(), np.zeros((len(pval_neg), 2), dtype=int)]
+    y_test = dtest[list(LABELS)].to_numpy()
+    res = {"sets": {"dfire_val": len(dval), "pyro_val_negatives": len(pval_neg), "dfire_test": len(dtest),
+                    "pyro_test_negatives": int((ptest["smoke"] == 0).sum()), "pyro_test_positives": int(ptest["smoke"].sum())},
+           "models": {}}
+    for name, ckpt_path in models.items():
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model = build_model(ckpt["arch"], pretrained=False, num_outputs=len(LABELS))
+        model.load_state_dict(ckpt["state_dict"])
+        model = model.to(device).to(memory_format=torch.channels_last)
+        pre = ckpt["preprocess"]
+        run = lambda df: predict(model, _loader(df, np.zeros((len(df), 2)), pre, workers), device, "sigmoid")  # noqa: E731
+        p_val = np.r_[run(dval), run(pval_neg)]
+        p_test, p_py = run(dtest), run(ptest)
+        thr = pick_thresholds(y_val, p_val)
+        neg, pos = (ptest["smoke"] == 0).to_numpy(), (ptest["smoke"] == 1).to_numpy()
+        flags = p_py >= np.array(thr)
+        res["models"][name] = {
+            "checkpoint": str(ckpt_path), "thresholds": dict(zip(LABELS, thr)),
+            "dfire_test": dfire_report(y_test, p_test, thr),
+            "pyro_test_negatives": {"n": int(neg.sum()), "smoke_fpr": float(flags[neg, 0].mean()),
+                                    "fire_fpr": float(flags[neg, 1].mean()), "any_flag_fpr": float(flags[neg].any(1).mean()),
+                                    "smoke_score_median": float(np.median(p_py[neg, 0]))},
+            "pyro_test_positives_info": {"n": int(pos.sum()), "smoke_recall": float(flags[pos, 0].mean()),
+                                         "smoke_ap_test_sites": float(average_precision_score(ptest["smoke"], p_py[:, 0]))},
+        }
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "hardneg_compare.json").write_text(json.dumps(res, indent=2) + "\n")
+    lines = ["# Hard-negative fine-tune vs current model", "",
+             f"Sets: {res['sets']}", "", "Thresholds for both models: max F1 on D-Fire val + val-site Pyro negatives.", "",
+             "| model | thr smoke / fire | D-Fire test AP smoke / fire | smoke P / R | fire P / R | Pyro held-out neg FPR smoke / fire / any | Pyro held-out pos smoke recall (info) |",
+             "|---|---|---|---|---|---|---|"]
+    for name, m in res["models"].items():
+        t, pl, ng, ps = m["thresholds"], m["dfire_test"]["per_label"], m["pyro_test_negatives"], m["pyro_test_positives_info"]
+        lines.append(f"| {name} | {t['smoke']:.3f} / {t['fire']:.3f} | {pl['smoke']['ap']:.3f} / {pl['fire']['ap']:.3f} | "
+                     f"{pl['smoke']['precision']:.1%} / {pl['smoke']['recall']:.1%} | {pl['fire']['precision']:.1%} / {pl['fire']['recall']:.1%} | "
+                     f"{ng['smoke_fpr']:.1%} / {ng['fire_fpr']:.1%} / {ng['any_flag_fpr']:.1%} | {ps['smoke_recall']:.1%} |")
+    (out / "hardneg_compare.md").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    return res
+
+
 # --- training --------------------------------------------------------------------------------------
 
 
@@ -184,6 +255,9 @@ def main(argv=None) -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--eval-only", type=Path)
+    ap.add_argument("--init", type=Path, help="start from this checkpoint's weights (fine-tune)")
+    ap.add_argument("--pyro-negatives", action="store_true",
+                    help="add Pyro-SDIS negatives from train sites; early-stop on D-Fire val + val-site negatives")
     args = ap.parse_args(argv)
 
     if args.eval_only:
@@ -191,7 +265,8 @@ def main(argv=None) -> None:
         return
     if args.smoke:
         args.epochs = 1
-    run = RUNS / f"{datetime.now():%Y%m%d-%H%M%S}_{args.arch}_s{args.seed}{'_smoke' if args.smoke else ''}"
+    tag = ("_hardneg" if args.pyro_negatives else "") + ("_smoke" if args.smoke else "")
+    run = RUNS / f"{datetime.now():%Y%m%d-%H%M%S}_{args.arch}_s{args.seed}{tag}"
     run.mkdir(parents=True)
     log = Logger(run / "train.log")
     seed_everything(args.seed)
@@ -200,6 +275,10 @@ def main(argv=None) -> None:
 
     d = load_dfire()
     parts = {s: d[d["split"] == s].reset_index(drop=True) for s in ("train", "val")}
+    if args.pyro_negatives:
+        py = pyro_by_split()
+        neg = {s: as_negatives(py[(py["split"] == s) & (py["smoke"] == 0)]) for s in ("train", "val")}
+        parts = {s: pd.concat([parts[s].assign(source="dfire"), neg[s]], ignore_index=True) for s in parts}
     if args.smoke:
         parts = {s: x.sample(SMOKE_ROWS[s], random_state=args.seed).reset_index(drop=True) for s, x in parts.items()}
     y_train = parts["train"][list(LABELS)].to_numpy()
@@ -207,6 +286,9 @@ def main(argv=None) -> None:
     pos_weight = torch.tensor((len(y_train) - pos) / pos, dtype=torch.float32)
     batch = fit_batch_size(args.arch, args.batch_size, device, log)
     config = vars(args) | {"eval_only": None, "batch_size": batch, "rows": {s: len(x) for s, x in parts.items()},
+                           "pyro_negatives_rows": {s: int((x.get("source") == "pyro_neg").sum()) if "source" in x else 0
+                                                   for s, x in parts.items()},
+                           "pyro_split_file": "ml/splits/pyro_cameras.json" if args.pyro_negatives else None,
                            "pos_weight": dict(zip(LABELS, pos_weight.tolist())), "preprocess": SQUASH_PREPROCESS,
                            "split_file": "ml/splits/dfire.json", "torch": torch.__version__}
     (run / "config.json").write_text(json.dumps(config, indent=2, default=str) + "\n")
@@ -220,7 +302,11 @@ def main(argv=None) -> None:
     val_loader = DataLoader(MultiLabelImages(parts["val"]["path"], y_val, eval_transform(SQUASH_PREPROCESS)),
                             batch_size=64, **kw)
 
-    model = build_model(args.arch, num_outputs=len(LABELS)).to(device).to(memory_format=torch.channels_last)
+    model = build_model(args.arch, num_outputs=len(LABELS))
+    if args.init:
+        model.load_state_dict(torch.load(args.init, map_location="cpu", weights_only=False)["state_dict"])
+        log(f"initialised from {args.init}")
+    model = model.to(device).to(memory_format=torch.channels_last)
     optimizer = torch.optim.AdamW(param_groups(model, args.lr, args.backbone_lr), weight_decay=args.weight_decay)
     scheduler = cosine_with_warmup(optimizer, len(train_loader), len(train_loader) * args.epochs)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device))
@@ -265,6 +351,9 @@ def main(argv=None) -> None:
     log(f"best epoch {best_epoch} (val mean AP {best:.3f}); evaluating")
     del train_loader, val_loader
     evaluate_run(run / "best.pt", args.workers, args.smoke, log)
+    if args.pyro_negatives:
+        compare_hardneg({"current": args.init, "hardneg": run / "best.pt"} if args.init else {"hardneg": run / "best.pt"},
+                        run, args.workers, args.smoke)
     log("DONE")
 
 
