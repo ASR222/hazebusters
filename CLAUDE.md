@@ -192,14 +192,15 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Sat:** quality gate + causes end-to-end; Grad-CAM; seasonal line; Bedrock/Strands advice (EN/HI) + Polly; PWA; deploy; ONNX; test with non-team users; cut anything not working by Sat night.
 - **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations incl. CAMS/Open-Meteo); blog; submit early.
 
-## 11. Status (Fri 9 Oct, evening)
+## 11. Status (Fri 9 Oct → early Sat 10 Oct)
 
-Done (Thu): repo and branches (`ml/aqi-labels` → PR #1, `ml/traqid-loader`), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
-Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine) with 57 mocked tests; CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
+Done (Thu): repo and branches (`ml/aqi-labels` → PR #1; `ml/traqid-loader` → PR #2, which also contains #1's commit — merge #1 first or close it), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
+Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine); CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
 Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **whenever `used == modelled` → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed; helps Delhi/Patna, **hurts Hyderabad** — `ml/RESULTS.md` §2b); decision = worst slot over the profile's remaining hours today (school 07–17, worker 06–19, general 06–21), or tomorrow's hours after they end (`decision.for`); `no_window_today` / `no_window_tomorrow` if no "yes" slot. Details: `backend/src/air/decision_rules.md`.
+Done (Fri night): `forecast_tomorrow`; D-Fire + Pyro-SDIS downloaded and extracted (`$DATA_DIR/dfire_hf`, `$DATA_DIR/pyro_sdis`) — **D-Fire came from the Hugging Face mirror `badsaarow/d-fire`** (the official OneDrive links block scripted downloads; counts match the README); D-Fire split v2 (no consecutive-frame leaks ≤ 15; **the 10% group cap was hit 4 times**); smoke/fire model trained + ONNX + CAM: **D-Fire test AP smoke 0.979 / fire 0.982; Pyro-SDIS smoke recall 13.4%, so it doesn't transfer yet** (`ml/RESULTS.md` §3).
+Tests: backend 62, shared 50, ml 33 (all passing).
 Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`. **`WAQI_TOKEN` in `.env` is empty.**
-Done (Fri night): `forecast_tomorrow`; D-Fire + Pyro-SDIS downloaded and extracted (`$DATA_DIR/dfire_hf`, `$DATA_DIR/pyro_sdis`); D-Fire split v2 (no consecutive-frame leaks ≤ 15); smoke/fire model trained + ONNX + CAM (`ml/RESULTS.md` §3).
-Remaining: WAQI token + live test + Ranchi check, Bedrock model access, Polly, quality gate, YOLO11n (vehicles + smoke/fire boxes), AWS skeleton, PWA, **own test clips (the smoke model's real test)**, final names.
+Remaining: WAQI token + live test + Ranchi check, Bedrock model access, **Bedrock/Strands advice (EN/HI, template fallback)**, Polly, **seasonal lookup script + JSON** (§6.3), quality gate, YOLO11n (vehicles + smoke/fire boxes), AWS skeleton, PWA, **own test clips (the smoke model's real test)**, final names, **merging PRs #1 then #2**.
 
 ## 12. Open items
 
