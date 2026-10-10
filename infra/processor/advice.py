@@ -43,6 +43,9 @@ CPCB_HEALTH = {
     "Severe": "Affects healthy people and seriously impacts those with existing diseases",
 }
 
+# Below this per-clip probability a present smoke/fire is only "possible" (never "detected").
+POSSIBLE_BELOW = 0.6
+
 # Period word by hour (24 h): 4-11 morning, 12-15 afternoon, 16-18 evening, 19-3 night.
 PERIODS = ((4, 11, "सुबह"), (12, 15, "दोपहर"), (16, 18, "शाम"))
 
@@ -119,9 +122,12 @@ def facts(air: dict, profile: str, causes: dict | None = None, causes_available:
         "source": a["used"], "confidence": a["confidence"],
         "causes": {"available": False},
     }
-    if causes_available and causes:
-        out["causes"] = {"available": True, "smoke": causes["smoke"]["present"], "fire": causes["fire"]["present"],
-                         "vehicle_count": causes["vehicle_count"]}
+    if causes_available and causes:  # only when the smoke/fire model ran; no probabilities (no numbers to quote)
+        out["causes"] = {"available": True}
+        for label in ("smoke", "fire"):
+            c = causes[label]
+            out["causes"][label] = ({"present": True, "certainty": "possible" if c["prob"] < POSSIBLE_BELOW else "likely"}
+                                    if c["present"] else {"present": False})
     return out
 
 

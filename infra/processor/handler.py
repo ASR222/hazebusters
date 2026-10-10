@@ -1,7 +1,8 @@
 """S3 ObjectCreated on uploads/{job_id}.<ext> -> frames, causes, air, advice, audio -> result_json in DynamoDB.
 
 Never writes to uploads/ (that would re-trigger this function). Any error -> status=failed + error.
-Extension points: causes.py (ONNX models), advice.py (Bedrock via llm.py, template fallback). audio.py: Polly HI + EN -> audio/.
+causes.py: ONNX smoke/fire + CAM overlay -> overlays/; advice.py: Bedrock via llm.py, template fallback;
+audio.py: Polly HI + EN -> audio/.
 """
 
 import json
@@ -21,9 +22,11 @@ from air.combine import air_for
 
 REGION = os.environ.get("AWS_REGION", "ap-south-1")
 TABLE = os.environ["TABLE_NAME"]
+BUCKET = os.environ.get("BUCKET_NAME", "")
 
 s3 = boto3.client("s3", region_name=REGION, config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
 table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE)
+causes.load()  # ONNX session once per cold start; a load failure is reported per clip
 
 
 def _set(job_id: str, **fields) -> None:
@@ -54,8 +57,8 @@ def process(bucket: str, key: str, job_id: str) -> dict:
         clip.unlink(missing_ok=True)
 
     air = air_for(lat, lon, os.environ.get("WAQI_TOKEN") or None, profile=profile)
-    found = causes.detect(sampled)
-    text, sections = advice.build(air, profile, found, causes.AVAILABLE)
+    found, cause_caveats, model_ran = causes.detect(sampled, job_id, s3, BUCKET)
+    text, sections = advice.build(air, profile, found, model_ran)
     spoken, audio_caveats = audio.synthesize(sections, job_id)
     return {
         "job_id": job_id,
@@ -70,7 +73,7 @@ def process(bucket: str, key: str, job_id: str) -> dict:
         "causes": found,
         "advice": text,
         "audio": spoken,
-        "caveats": air["caveats"] + causes.CAVEATS + audio_caveats,
+        "caveats": air["caveats"] + cause_caveats + audio_caveats,
     }
 
 

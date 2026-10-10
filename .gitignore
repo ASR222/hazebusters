@@ -11,3 +11,4 @@ runs/
 *.keras
 *.zip
 samconfig.toml
+infra/processor/models/

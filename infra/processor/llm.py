@@ -32,7 +32,10 @@ You get a JSON object of facts computed by our pipeline. Rules:
   (times are already written as spoken words; do not convert them to digits like 09:00).
 - Do not say the reading is an estimate and do not explain sources, models, stations or confidence (the app shows
   those separately).
-- Mention visible causes only if `causes.available` is true and something is present.
+- Visible causes: mention smoke or fire only if `causes.available` is true and that cause has `present: true`;
+  otherwise do not mention smoke or fire at all. If its `certainty` is "possible", say "possible smoke" / "possible
+  fire" (Hindi: "धुआँ हो सकता है" / "आग हो सकती है"); never say it was detected, seen or confirmed. If "likely",
+  say smoke / fire is likely visible in the clip. Never say what caused the AQI.
 
 Hindi:
 - Simple, natural spoken Hindi, the way an Indian news reader would say it on air: short sentences, everyday words,
@@ -57,6 +60,16 @@ _SENTENCE = re.compile(r"[^.?!।]+[.?!।]*")
 # A Hindi sentence about health effects must not use the certain future ("होगी" / "होगा"); CPCB says "may".
 _HEALTH_HI = re.compile(r"साँस|सांस|तकलीफ़|तकलीफ|बीमारी|रोग|असुविधा|स्वास्थ्य|दमा|अस्थमा")
 _CERTAIN_HI = re.compile(r"होगी|होगा")
+# Smoke/fire mentions (Devanagari words need explicit edges: Python's \b breaks on vowel signs, and "आग" is inside
+# "आगे"; "धुंध" (haze) is not smoke).
+_DEV = "\u0900-\u097F"
+CAUSE_WORDS = {
+    "smoke": (re.compile(r"\bsmok", re.I), re.compile(f"(?<![{_DEV}])(धुआँ|धुआं|धुआ|धुएँ|धुएं|धुंआ|धुँआ)")),
+    "fire": (re.compile(r"\b(fires?|flames?|blaze)\b", re.I), re.compile(f"(?<![{_DEV}])(आग|लपट)(?![{_DEV}])")),
+}
+_DEFINITE_EN = re.compile(r"\b(detect|confirm|spotted|seen)", re.I)
+_DEFINITE_HI = re.compile(r"पाया गया|पाई गई|पता चला|देखा गया|देखी गई|पुष्टि")
+_POSSIBLE_EN = re.compile(r"\b(possibl|may be|might)", re.I)
 
 _client = None
 
@@ -95,6 +108,22 @@ def sentences(text: str) -> list[str]:
     return [x.strip().replace("<dot>", ".") for x in _SENTENCE.findall(text) if x.strip(" .?!।")]
 
 
+def check_causes(texts: dict, causes: dict) -> None:
+    """Smoke/fire only when present; "possible" (never definite) when certainty is "possible"."""
+    for label, (en_re, hi_re) in CAUSE_WORDS.items():
+        info = causes.get(label) if causes.get("available") else None
+        mentioned = {"en": bool(en_re.search(texts["en"])), "hi": bool(hi_re.search(texts["hi"]))}
+        if not (info and info.get("present")):
+            if any(mentioned.values()):
+                raise AdviceRejected(f"mentions {label} but it is not present")
+            continue
+        if info.get("certainty") == "possible":
+            if mentioned["en"] and (_DEFINITE_EN.search(texts["en"]) or not _POSSIBLE_EN.search(texts["en"])):
+                raise AdviceRejected(f"en states possible {label} as definite")
+            if mentioned["hi"] and _DEFINITE_HI.search(texts["hi"]):
+                raise AdviceRejected(f"hi states possible {label} as definite")
+
+
 def validate(out: dict, facts: dict) -> dict:
     """-> {"en", "hi"} stripped, or raise AdviceRejected with the reason."""
     texts = {}
@@ -113,6 +142,7 @@ def validate(out: dict, facts: dict) -> dict:
             raise AdviceRejected(f"{lang} has {n} sentences (> {MAX_SENTENCES})")
     if bad := [x for x in sentences(texts["hi"]) if _HEALTH_HI.search(x) and _CERTAIN_HI.search(x)]:
         raise AdviceRejected(f"hi states a health effect as certain: {bad[0]!r}")
+    check_causes(texts, facts.get("causes") or {})
     if not _DEVANAGARI.search(texts["hi"]):
         raise AdviceRejected("hi has no Devanagari")
     aqi = str(facts["aqi"])

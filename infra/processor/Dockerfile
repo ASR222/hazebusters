@@ -10,5 +10,7 @@ RUN pip install --no-cache-dir /tmp/shared && rm -rf /tmp/shared
 COPY backend/src/air/ ${LAMBDA_TASK_ROOT}/air/
 
 COPY infra/processor/*.py ${LAMBDA_TASK_ROOT}/
+# smokefire.onnx, head.npz, export_report.json (gitignored; copied from the ML run).
+COPY infra/processor/models/ ${LAMBDA_TASK_ROOT}/models/
 
 CMD ["handler.handler"]

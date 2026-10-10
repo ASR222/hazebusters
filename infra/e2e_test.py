@@ -4,7 +4,9 @@
 
 Per clip: POST /jobs (Ranchi, school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
 until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
-and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files). Exit 1 on any failure.
+and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files) -> check smoke: clips
+named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url); all others must
+come back without smoke. Exit 1 on any failure.
 """
 
 import argparse
@@ -88,7 +90,28 @@ def check_audio(got: dict, clip: Path, save_dir: Path | None) -> list[str]:
     return errs
 
 
-def run(api: str, clip: Path, save_dir: Path | None = None) -> bool:
+def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> list[str]:
+    c = got["result"]["causes"]
+    print(f"[{clip.name}] smoke {c['smoke']}, fire {c['fire']}, gradcam_key {c['gradcam_key']}")
+    if any("Smoke check unavailable" in x for x in got["result"]["caveats"]):
+        return ["smoke model did not run (caveat 'Smoke check unavailable')"]
+    if c["smoke"]["present"] != expect:
+        return [f"smoke.present = {c['smoke']['present']}, expected {expect}"]
+    if not expect:
+        return []
+    url = got.get("gradcam_url")
+    if not c["gradcam_key"] or not url:
+        return [f"no overlay (gradcam_key={c['gradcam_key']!r}, url={'set' if url else None})"]
+    status, data = request("GET", url)
+    print(f"[{clip.name}] overlay GET -> {status}, {len(data)} bytes")
+    if status != 200 or data[:3] != b"\xff\xd8\xff":
+        return [f"overlay not a JPEG (status {status}, head {data[:4]!r})"]
+    if save_dir:
+        (save_dir / f"{clip.stem}_{got['job_id']}_overlay.jpg").write_bytes(data)
+    return []
+
+
+def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False) -> bool:
     ctype = TYPES[clip.suffix]
     t0 = time.monotonic()
     status, body = request("POST", f"{api}/jobs", json.dumps(
@@ -119,7 +142,7 @@ def run(api: str, clip: Path, save_dir: Path | None = None) -> bool:
     if got["status"] != "done":
         print(f"[{clip.name}] FAILED: {got['error']}")
         return False
-    errs = check(got["result"]) + check_audio(got, clip, save_dir)
+    errs = check(got["result"]) + check_audio(got, clip, save_dir) + check_smoke(got, clip, expect_smoke, save_dir)
     print(f"[{clip.name}] checks: " + ("OK" if not errs else "; ".join(errs)))
     return not errs
 
@@ -129,10 +152,12 @@ def main() -> None:
     p.add_argument("clips", nargs="+", type=Path)
     p.add_argument("--api", help="HTTP API base URL (default: the stack's ApiUrl output)")
     p.add_argument("--stack", default="hazebusters")
-    p.add_argument("--save-audio", type=Path, help="directory to save the downloaded mp3s")
+    p.add_argument("--save-audio", type=Path, help="directory to save the downloaded mp3s and overlays")
+    p.add_argument("--expect-smoke", action="append", default=[], metavar="CLIP_NAME",
+                   help="file name of a clip that must come back with smoke (repeatable)")
     args = p.parse_args()
     api = (args.api or api_url(args.stack)).rstrip("/")
-    results = [run(api, clip, args.save_audio) for clip in args.clips]
+    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke) for clip in args.clips]
     sys.exit(0 if all(results) else 1)
 
 

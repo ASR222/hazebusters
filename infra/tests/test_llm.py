@@ -109,6 +109,47 @@ def test_sentence_split():
     assert len(llm.sentences(GOOD["hi"])) == 3 and len(llm.sentences(GOOD["en"])) == 3
 
 
+def _facts_with(smoke):
+    f = advice.facts(AIR, "school")
+    f["causes"] = {"available": True, "smoke": smoke, "fire": {"present": False}}
+    return f
+
+
+def test_causes_reach_model_only_when_ran():
+    c = {"smoke": {"present": True, "prob": 0.45}, "fire": {"present": False, "prob": 0.1}}
+    assert advice.facts(AIR, "school", c, False)["causes"] == {"available": False}
+    assert advice.facts(AIR, "school", c, True)["causes"] == {
+        "available": True, "smoke": {"present": True, "certainty": "possible"}, "fire": {"present": False}}
+    c["smoke"]["prob"] = 0.8
+    assert advice.facts(AIR, "school", c, True)["causes"]["smoke"]["certainty"] == "likely"
+
+
+def test_smoke_mentioned_when_absent_is_rejected():
+    bad = {"en": GOOD["en"] + " Smoke is visible.", "hi": GOOD["hi"]}
+    with pytest.raises(llm.AdviceRejected, match="mentions smoke but it is not present"):
+        llm.validate(bad, _facts_with({"present": False}))
+    bad = {"en": GOOD["en"], "hi": GOOD["hi"] + " पास में आग है।"}
+    with pytest.raises(llm.AdviceRejected, match="mentions fire"):
+        llm.validate(bad, advice.facts(AIR, "school"))
+
+
+def test_hindi_word_edges():
+    ok = {"en": GOOD["en"], "hi": GOOD["hi"] + " आगे भी धुंध रह सकती है।"}  # "आगे" isn't fire, "धुंध" isn't smoke
+    assert llm.validate(ok, advice.facts(AIR, "school")) == ok
+
+
+def test_possible_smoke_must_not_sound_definite():
+    possible = _facts_with({"present": True, "certainty": "possible"})
+    ok = {"en": GOOD["en"] + " There is possible smoke nearby.", "hi": GOOD["hi"] + " पास में धुआँ हो सकता है।"}
+    assert llm.validate(ok, possible) == ok
+    with pytest.raises(llm.AdviceRejected, match="en states possible smoke as definite"):
+        llm.validate({**ok, "en": GOOD["en"] + " Smoke was detected nearby."}, possible)
+    with pytest.raises(llm.AdviceRejected, match="hi states possible smoke as definite"):
+        llm.validate({**ok, "hi": GOOD["hi"] + " पास में धुआँ पाया गया।"}, possible)
+    likely = _facts_with({"present": True, "certainty": "likely"})
+    assert llm.validate({**ok, "en": GOOD["en"] + " Smoke is likely visible."}, likely)
+
+
 def test_missing_hindi_falls_back(capsys):
     _fallback(FakeBedrock(json.dumps({"en": GOOD["en"]})), capsys, "missing or empty hi")
 

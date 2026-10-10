@@ -69,6 +69,10 @@ Resources:
             Status: Enabled
             Prefix: audio/
             ExpirationInDays: 7
+          - Id: expire-overlays
+            Status: Enabled
+            Prefix: overlays/
+            ExpirationInDays: 7
 
   CreateJobFunction:
     Type: AWS::Serverless::Function
@@ -104,8 +108,10 @@ Resources:
             TableName: !Ref JobsTable
         - Statement:
             - Effect: Allow
-              Action: s3:GetObject  # presigned audio URLs are signed with this role
-              Resource: !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
+              Action: s3:GetObject  # presigned audio/overlay URLs are signed with this role
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
+                - !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/overlays/*"
       Events:
         Get:
           Type: HttpApi
@@ -138,8 +144,10 @@ Resources:
               Action: polly:SynthesizeSpeech
               Resource: "*"
             - Effect: Allow
-              Action: s3:PutObject  # audio only; never uploads/ (that prefix triggers this function)
-              Resource: !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
+              Action: s3:PutObject  # audio + CAM overlays only; never uploads/ (that prefix triggers this function)
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/audio/*"
+                - !Sub "arn:${AWS::Partition}:s3:::${AWS::StackName}-uploads-${AWS::AccountId}/overlays/*"
             # Global inference profile; `aws bedrock get-inference-profile` (9 Oct 2026) lists the region-less
             # foundation-model ARN (global routing) plus the ap-south-1 one.
             - Effect: Allow
@@ -164,7 +172,7 @@ Resources:
     Metadata:
       DockerContext: ..
       Dockerfile: infra/processor/Dockerfile
-      DockerTag: python3.12-v1
+      DockerTag: python3.12-v2
 
 Outputs:
   ApiUrl:
