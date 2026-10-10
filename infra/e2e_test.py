@@ -2,7 +2,7 @@
 
     python infra/e2e_test.py path/to/test.mp4 path/to/test.webm [--api URL] [--stack hazebusters]
 
-Per clip: POST /jobs (Ranchi, school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
+Per clip: POST /jobs (--place, default Ranchi; school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
 until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
 and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files) -> check smoke: clips
 named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url) and Bedrock advice carrying the smoke
@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-RANCHI = (23.3441, 85.3096)
+PLACES = {"Ranchi": (23.3441, 85.3096), "Hyderabad": (17.385, 78.4867), "Delhi": (28.6139, 77.209)}
 TYPES = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
 CONTRACT = Path(__file__).resolve().parents[1] / "backend" / "contract.json"
 REGION = "ap-south-1"
@@ -120,11 +120,11 @@ def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> l
     return errs
 
 
-def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False) -> bool:
+def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False, place: str = "Ranchi") -> bool:
     ctype = TYPES[clip.suffix]
     t0 = time.monotonic()
     status, body = request("POST", f"{api}/jobs", json.dumps(
-        {"lat": RANCHI[0], "lon": RANCHI[1], "profile": "school", "content_type": ctype}).encode(),
+        {"lat": PLACES[place][0], "lon": PLACES[place][1], "profile": "school", "content_type": ctype}).encode(),
         {"Content-Type": "application/json"})
     if status != 201:
         print(f"[{clip.name}] POST /jobs -> {status}: {body.decode()}")
@@ -162,11 +162,12 @@ def main() -> None:
     p.add_argument("--api", help="HTTP API base URL (default: the stack's ApiUrl output)")
     p.add_argument("--stack", default="hazebusters")
     p.add_argument("--save-audio", type=Path, help="directory to save the downloaded mp3s and overlays")
+    p.add_argument("--place", choices=list(PLACES), default="Ranchi", help="location sent with the job")
     p.add_argument("--expect-smoke", action="append", default=[], metavar="CLIP_NAME",
                    help="file name of a clip that must come back with smoke (repeatable)")
     args = p.parse_args()
     api = (args.api or api_url(args.stack)).rstrip("/")
-    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke) for clip in args.clips]
+    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke, args.place) for clip in args.clips]
     sys.exit(0 if all(results) else 1)
 
 
