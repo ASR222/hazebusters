@@ -168,16 +168,24 @@ def build(air: dict, profile: str, causes: dict | None = None, causes_available:
           bedrock=None) -> tuple[dict, dict]:
     """-> (contract `advice`, {"en": ..., "hi": ...} text or sections for speech).
 
-    Bedrock first (if configured); the template on any failure, with the reason logged."""
-    template, sections = template_advice(air, profile, cause_info(causes, causes_available))
+    Bedrock first (if configured); the template on any failure, with the reason logged. Smoke/fire seen in the clip
+    is always shown by appending the template cause sentence in code (Bedrock's advice too; source stays "bedrock"),
+    so the model gets one sentence less to keep the total within llm.MAX_SENTENCES."""
+    info = cause_info(causes, causes_available)
+    template, sections = template_advice(air, profile, info)
     if not llm.model_id():
         return template, sections
+    cause = cause_line(info)
     try:
-        out = llm.advise(facts(air, profile, causes, causes_available), bedrock)
+        out = llm.advise(facts(air, profile, causes, causes_available), bedrock,
+                         max_sentences=llm.MAX_SENTENCES - (1 if cause else 0))
     except Exception as e:
         print(json.dumps({"advice": "template_fallback", "reason": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
         return template, sections
-    return {"en": out["en"], "hi": out["hi"], "source": "bedrock"}, out
+    if not cause:
+        return {"en": out["en"], "hi": out["hi"], "source": "bedrock"}, out
+    speech = {lang: [out[lang], cause[i]] for i, lang in enumerate(("en", "hi"))}  # pause before the cause line
+    return {"en": " ".join(speech["en"]), "hi": " ".join(speech["hi"]), "source": "bedrock"}, speech
 
 
 def template_advice(air: dict, profile: str, causes: dict | None = None) -> tuple[dict, dict[str, list[str]]]:

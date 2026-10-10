@@ -32,11 +32,8 @@ You get a JSON object of facts computed by our pipeline. Rules:
   (times are already written as spoken words; do not convert them to digits like 09:00).
 - Do not say the reading is an estimate and do not explain sources, models, stations or confidence (the app shows
   those separately).
-- Visible causes: mention smoke or fire only if `causes.available` is true and that cause has `present: true`;
-  otherwise do not mention smoke or fire at all. If its `certainty` is "possible", say "possible smoke" / "possible
-  fire" (Hindi: "धुआँ हो सकता है" / "आग हो सकती है"); never say it was detected, seen or confirmed. If "likely",
-  you must mention it in both languages: smoke / fire is visible in the clip (Hindi: "धुआँ" / "आग"), and advise
-  staying away from it. Never say what caused the AQI.
+- Do not mention smoke or fire at all: the app adds its own sentence about anything seen in the clip. Never say
+  what caused the AQI.
 
 Hindi:
 - Simple, natural spoken Hindi, the way an Indian news reader would say it on air: short sentences, everyday words,
@@ -110,8 +107,8 @@ def sentences(text: str) -> list[str]:
 
 
 def check_causes(texts: dict, causes: dict) -> None:
-    """Smoke/fire only when present; "possible" (never definite) when certainty is "possible"; must be mentioned in
-    both languages when certainty is "likely"."""
+    """Smoke/fire only when present; "possible" (never definite) when certainty is "possible". (The cause sentence
+    itself is appended in code by advice.build, so the model doesn't have to mention it.)"""
     for label, (en_re, hi_re) in CAUSE_WORDS.items():
         info = causes.get(label) if causes.get("available") else None
         mentioned = {"en": bool(en_re.search(texts["en"])), "hi": bool(hi_re.search(texts["hi"]))}
@@ -119,9 +116,6 @@ def check_causes(texts: dict, causes: dict) -> None:
             if any(mentioned.values()):
                 raise AdviceRejected(f"mentions {label} but it is not present")
             continue
-        if info.get("certainty") == "likely":
-            if missing := [lang for lang, m in mentioned.items() if not m]:
-                raise AdviceRejected(f"likely {label} not mentioned in {'/'.join(missing)}")
         if info.get("certainty") == "possible":
             if mentioned["en"] and (_DEFINITE_EN.search(texts["en"]) or not _POSSIBLE_EN.search(texts["en"])):
                 raise AdviceRejected(f"en states possible {label} as definite")
@@ -129,7 +123,7 @@ def check_causes(texts: dict, causes: dict) -> None:
                 raise AdviceRejected(f"hi states possible {label} as definite")
 
 
-def validate(out: dict, facts: dict) -> dict:
+def validate(out: dict, facts: dict, max_sentences: int = MAX_SENTENCES) -> dict:
     """-> {"en", "hi"} stripped, or raise AdviceRejected with the reason."""
     texts = {}
     for lang in ("en", "hi"):
@@ -143,8 +137,8 @@ def validate(out: dict, facts: dict) -> dict:
             raise AdviceRejected(f"{lang} has markup or line breaks ({m[0]!r})")
         texts[lang] = t
     for lang, t in texts.items():
-        if (n := len(sentences(t))) > MAX_SENTENCES:
-            raise AdviceRejected(f"{lang} has {n} sentences (> {MAX_SENTENCES})")
+        if (n := len(sentences(t))) > max_sentences:
+            raise AdviceRejected(f"{lang} has {n} sentences (> {max_sentences})")
     if bad := [x for x in sentences(texts["hi"]) if _HEALTH_HI.search(x) and _CERTAIN_HI.search(x)]:
         raise AdviceRejected(f"hi states a health effect as certain: {bad[0]!r}")
     check_causes(texts, facts.get("causes") or {})
@@ -161,7 +155,7 @@ def validate(out: dict, facts: dict) -> dict:
     return texts
 
 
-def advise(facts: dict, bedrock=None) -> dict:
+def advise(facts: dict, bedrock=None, max_sentences: int = MAX_SENTENCES) -> dict:
     """Facts -> validated {"en", "hi"}. Raises on any failure (caller falls back to the template)."""
     mid = model_id()
     if not mid:
@@ -181,4 +175,4 @@ def advise(facts: dict, bedrock=None) -> dict:
     if resp.get("stopReason") == "max_tokens":
         raise AdviceRejected("hit max_tokens")
     text = "".join(c.get("text", "") for c in resp["output"]["message"]["content"])
-    return validate(parse(text), facts)
+    return validate(parse(text), facts, max_sentences)
