@@ -35,7 +35,8 @@ You get a JSON object of facts computed by our pipeline. Rules:
 - Visible causes: mention smoke or fire only if `causes.available` is true and that cause has `present: true`;
   otherwise do not mention smoke or fire at all. If its `certainty` is "possible", say "possible smoke" / "possible
   fire" (Hindi: "धुआँ हो सकता है" / "आग हो सकती है"); never say it was detected, seen or confirmed. If "likely",
-  say smoke / fire is likely visible in the clip. Never say what caused the AQI.
+  you must mention it in both languages: smoke / fire is visible in the clip (Hindi: "धुआँ" / "आग"), and advise
+  staying away from it. Never say what caused the AQI.
 
 Hindi:
 - Simple, natural spoken Hindi, the way an Indian news reader would say it on air: short sentences, everyday words,
@@ -109,7 +110,8 @@ def sentences(text: str) -> list[str]:
 
 
 def check_causes(texts: dict, causes: dict) -> None:
-    """Smoke/fire only when present; "possible" (never definite) when certainty is "possible"."""
+    """Smoke/fire only when present; "possible" (never definite) when certainty is "possible"; must be mentioned in
+    both languages when certainty is "likely"."""
     for label, (en_re, hi_re) in CAUSE_WORDS.items():
         info = causes.get(label) if causes.get("available") else None
         mentioned = {"en": bool(en_re.search(texts["en"])), "hi": bool(hi_re.search(texts["hi"]))}
@@ -117,6 +119,9 @@ def check_causes(texts: dict, causes: dict) -> None:
             if any(mentioned.values()):
                 raise AdviceRejected(f"mentions {label} but it is not present")
             continue
+        if info.get("certainty") == "likely":
+            if missing := [lang for lang, m in mentioned.items() if not m]:
+                raise AdviceRejected(f"likely {label} not mentioned in {'/'.join(missing)}")
         if info.get("certainty") == "possible":
             if mentioned["en"] and (_DEFINITE_EN.search(texts["en"]) or not _POSSIBLE_EN.search(texts["en"])):
                 raise AdviceRejected(f"en states possible {label} as definite")

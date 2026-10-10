@@ -43,6 +43,19 @@ CPCB_HEALTH = {
     "Severe": "Affects healthy people and seriously impacts those with existing diseases",
 }
 
+# Smoke/fire seen in the clip, keyed by the labels present (in LABELS order).
+CAUSE_LIKELY = {
+    ("smoke",): ("Smoke is visible in your clip; stay away from it.", "आपकी क्लिप में धुआँ दिख रहा है; उससे दूर रहें।"),
+    ("fire",): ("Fire is visible in your clip; stay away from it.", "आपकी क्लिप में आग दिख रही है; उससे दूर रहें।"),
+    ("smoke", "fire"): ("Smoke and fire are visible in your clip; stay away from them.",
+                        "आपकी क्लिप में धुआँ और आग दिख रहे हैं; उनसे दूर रहें।"),
+}
+CAUSE_POSSIBLE = {
+    ("smoke",): ("There is possible smoke in your clip.", "आपकी क्लिप में धुआँ हो सकता है।"),
+    ("fire",): ("There is possible fire in your clip.", "आपकी क्लिप में आग हो सकती है।"),
+    ("smoke", "fire"): ("There is possible smoke and fire in your clip.", "आपकी क्लिप में धुआँ और आग हो सकते हैं।"),
+}
+
 # Below this per-clip probability a present smoke/fire is only "possible" (never "detected").
 POSSIBLE_BELOW = 0.6
 
@@ -120,15 +133,35 @@ def facts(air: dict, profile: str, causes: dict | None = None, causes_available:
         "best_window": {"en": english_range(_hm(w["start"]), _hm(w["end"])),
                         "hi": hindi_range(_hm(w["start"]), _hm(w["end"]))} if w else None,
         "source": a["used"], "confidence": a["confidence"],
-        "causes": {"available": False},
+        "causes": cause_info(causes, causes_available),
     }
-    if causes_available and causes:  # only when the smoke/fire model ran; no probabilities (no numbers to quote)
-        out["causes"] = {"available": True}
-        for label in ("smoke", "fire"):
-            c = causes[label]
-            out["causes"][label] = ({"present": True, "certainty": "possible" if c["prob"] < POSSIBLE_BELOW else "likely"}
-                                    if c["present"] else {"present": False})
     return out
+
+
+def cause_info(causes: dict | None, available: bool) -> dict:
+    """Smoke/fire as the model and the template see them: present + certainty, no probabilities (no numbers to
+    quote). {"available": False} unless the smoke/fire model ran."""
+    if not (available and causes):
+        return {"available": False}
+    out = {"available": True}
+    for label in ("smoke", "fire"):
+        c = causes[label]
+        out[label] = ({"present": True, "certainty": "possible" if c["prob"] < POSSIBLE_BELOW else "likely"}
+                      if c["present"] else {"present": False})
+    return out
+
+
+def cause_line(info: dict) -> tuple[str, str] | None:
+    """Template sentence (en, hi) for smoke/fire seen in the clip, or None."""
+    if not info.get("available"):
+        return None
+    likely = [k for k in ("smoke", "fire") if info[k]["present"] and info[k]["certainty"] == "likely"]
+    possible = [k for k in ("smoke", "fire") if info[k]["present"] and info[k]["certainty"] == "possible"]
+    if likely:
+        return CAUSE_LIKELY[tuple(likely)]
+    if possible:
+        return CAUSE_POSSIBLE[tuple(possible)]
+    return None
 
 
 def build(air: dict, profile: str, causes: dict | None = None, causes_available: bool = False,
@@ -136,7 +169,7 @@ def build(air: dict, profile: str, causes: dict | None = None, causes_available:
     """-> (contract `advice`, {"en": ..., "hi": ...} text or sections for speech).
 
     Bedrock first (if configured); the template on any failure, with the reason logged."""
-    template, sections = template_advice(air, profile)
+    template, sections = template_advice(air, profile, cause_info(causes, causes_available))
     if not llm.model_id():
         return template, sections
     try:
@@ -147,10 +180,12 @@ def build(air: dict, profile: str, causes: dict | None = None, causes_available:
     return {"en": out["en"], "hi": out["hi"], "source": "bedrock"}, out
 
 
-def template_advice(air: dict, profile: str) -> tuple[dict, dict[str, list[str]]]:
+def template_advice(air: dict, profile: str, causes: dict | None = None) -> tuple[dict, dict[str, list[str]]]:
     """-> (contract `advice`, {"en": sections, "hi": sections} for speech).
 
-    Sections: AQI + recommendation, health statement, best window. `air`: output of air.combine.air_for."""
+    Sections: AQI + recommendation, smoke/fire in the clip (if any), health statement, best window.
+    `air`: output of air.combine.air_for; `causes`: cause_info()."""
+    cause = cause_line(causes or {})
     d = air["decision"]
     aqi = air["air"]["aqi_cpcb"]
     rec, health = TEMPLATES[d["outdoor"]]
@@ -158,6 +193,8 @@ def template_advice(air: dict, profile: str) -> tuple[dict, dict[str, list[str]]
     for i, lang in enumerate(("en", "hi")):
         r = rec[i] if d["for"] == "today" else TOMORROW[i] + (_lower_first(rec[i]) if lang == "en" else rec[i])
         parts = [f"{AQI_SENTENCE[d['for']][i].format(aqi=aqi)} {r}"]
+        if cause:
+            parts.append(cause[i])
         if health:
             parts.append(health[i])
         if (w := d["best_window"]) and d["outdoor"] != "yes":

@@ -97,3 +97,26 @@ def test_build_yes_has_one_section():
     out, sections = advice.build(_air("yes", None), "general")
     assert len(sections["hi"]) == len(sections["en"]) == 1
     assert out["en"] == "Today's AQI is 134. Air is fine for outdoor activity."
+
+
+@pytest.mark.parametrize("smoke, fire, en, hi", [
+    (0.95, None, "Smoke is visible in your clip; stay away from it.", "आपकी क्लिप में धुआँ दिख रहा है; उससे दूर रहें।"),
+    (None, 0.9, "Fire is visible in your clip; stay away from it.", "आपकी क्लिप में आग दिख रही है; उससे दूर रहें।"),
+    (0.9, 0.8, "Smoke and fire are visible in your clip; stay away from them.",
+     "आपकी क्लिप में धुआँ और आग दिख रहे हैं; उनसे दूर रहें।"),
+    (0.45, None, "There is possible smoke in your clip.", "आपकी क्लिप में धुआँ हो सकता है।"),
+])
+def test_template_cause_line(smoke, fire, en, hi):
+    c = {"smoke": {"present": smoke is not None, "prob": smoke or 0.1},
+         "fire": {"present": fire is not None, "prob": fire or 0.1}}
+    out, sections = advice.template_advice(_air("limit", WINDOW), "school", advice.cause_info(c, True))
+    assert sections["en"][1] == en and sections["hi"][1] == hi  # right after AQI + recommendation
+    assert en in out["en"] and hi in out["hi"]
+
+
+def test_template_no_cause_line_when_model_did_not_run_or_clear():
+    c = {"smoke": {"present": True, "prob": 0.95}, "fire": {"present": False, "prob": 0.1}}
+    for info in (advice.cause_info(c, False), advice.cause_info(
+            {"smoke": {"present": False, "prob": 0.1}, "fire": {"present": False, "prob": 0.1}}, True)):
+        _, sections = advice.template_advice(_air("limit", WINDOW), "school", info)
+        assert len(sections["en"]) == 3 and not any("clip" in s for s in sections["en"])

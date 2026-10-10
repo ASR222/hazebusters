@@ -206,3 +206,37 @@ def test_ssml_safe_for_model_output(text):
     body = ssml.removeprefix('<speak><prosody rate="90%">').removesuffix("</prosody></speak>")
     assert re.sub(r'<break time="\d+ms"/>', "", body).count("<") == 0  # only our own tags
     xml.dom.minidom.parseString(ssml)  # well-formed
+
+
+# --- likely smoke/fire must be mentioned (model) / is always shown (template) --------------------
+
+LIKELY_SMOKE = {"smoke": {"present": True, "prob": 0.95}, "fire": {"present": False, "prob": 0.1}}
+
+
+def test_likely_smoke_not_mentioned_falls_back_to_template_with_cause_line(capsys):
+    out, speech = advice.build(AIR, "school", LIKELY_SMOKE, True, bedrock=FakeBedrock(json.dumps(GOOD, ensure_ascii=False)))
+    assert out["source"] == "template"
+    assert "Smoke is visible in your clip" in out["en"] and "धुआँ दिख रहा है" in out["hi"]
+    assert "likely smoke not mentioned in en/hi" in capsys.readouterr().out
+    assert any("धुआँ" in s for s in speech["hi"])
+
+
+def test_likely_smoke_mentioned_in_one_language_only_is_rejected():
+    f = _facts_with({"present": True, "certainty": "likely"})
+    with pytest.raises(llm.AdviceRejected, match="likely smoke not mentioned in hi"):
+        llm.validate({"en": GOOD["en"] + " Smoke is visible in the clip.", "hi": GOOD["hi"]}, f)
+
+
+def test_likely_smoke_mentioned_is_used():
+    both = {"en": GOOD["en"].replace(" The best time", " Smoke is visible in the clip, so stay away. The best time"),
+            "hi": GOOD["hi"] + " क्लिप में धुएं से दूर रहें।"}
+    out, _ = advice.build(AIR, "school", LIKELY_SMOKE, True, bedrock=FakeBedrock(json.dumps(both, ensure_ascii=False)))
+    assert out == {**both, "source": "bedrock"}
+
+
+def test_likely_fire_uses_aag():
+    f = advice.facts(AIR, "school", {"smoke": {"present": False, "prob": 0.1}, "fire": {"present": True, "prob": 0.9}}, True)
+    with pytest.raises(llm.AdviceRejected, match="likely fire not mentioned in hi"):
+        llm.validate({"en": GOOD["en"] + " Fire is visible.", "hi": GOOD["hi"]}, f)
+    ok = {"en": GOOD["en"] + " Fire is visible.", "hi": GOOD["hi"] + " पास में आग है।"}
+    assert llm.validate(ok, f) == ok
