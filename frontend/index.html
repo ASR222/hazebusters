@@ -43,16 +43,29 @@
             <option value="28.6139,77.2090">Delhi</option>
             <option value="17.3850,78.4867">Hyderabad</option>
             <option value="25.5941,85.1376">Patna</option>
+            <option value="22.8046,86.2029">Jamshedpur</option>
+            <option value="23.7957,86.4304">Dhanbad</option>
+            <option value="22.5726,88.3639">Kolkata</option>
+            <option value="19.0760,72.8777">Mumbai</option>
           </select>
         </fieldset>
 
         <fieldset class="card">
           <legend>Video</legend>
           <p class="hint">Hold the phone steady for about <strong>10 seconds</strong>, pointed at the sky and street.</p>
-          <label class="btn secondary file-btn">
-            <input type="file" id="video" accept="video/*" capture="environment">
-            <span id="video-label">Record or choose a clip</span>
-          </label>
+          <div class="row">
+            <label class="btn secondary file-btn">
+              <input type="file" id="video-record" class="js-video" accept="video/*" capture="environment">
+              <span>Record clip</span>
+            </label>
+            <label class="btn secondary file-btn">
+              <input type="file" id="video-gallery" class="js-video" accept="video/*">
+              <span>Choose from gallery</span>
+            </label>
+          </div>
+          <p id="video-label" class="muted" aria-live="polite">No clip yet.</p>
+          <p id="video-warn" class="warn" hidden></p>
+          <video id="video-probe" muted playsinline preload="metadata" hidden></video>
         </fieldset>
 
         <p id="form-error" class="error" role="alert" hidden></p>

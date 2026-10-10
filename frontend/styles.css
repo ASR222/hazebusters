@@ -125,7 +125,8 @@ select {
 
 .file-btn { position: relative; overflow: hidden; }
 .file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-#video-label { overflow-wrap: anywhere; }
+#video-label { margin: 10px 0 0; overflow-wrap: anywhere; }
+.warn { margin: 6px 0 0; color: var(--band1); font-weight: 600; }
 
 .error { color: var(--err); font-weight: 600; }
 .error-card { border-color: var(--err); }
