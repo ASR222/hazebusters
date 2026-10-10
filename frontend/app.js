@@ -47,11 +47,11 @@
   });
 
   function pickedLocation() {
-    if (coords) return coords;
+    if (coords) return { ...coords, gps: true };
     const v = $("#city").value;
     if (!v) return null;
     const [lat, lon] = v.split(",").map(Number);
-    return { lat, lon };
+    return { lat, lon, city: $("#city").selectedOptions[0].textContent };
   }
 
   function formError(msg) {
@@ -70,7 +70,7 @@
     const type = window.api.contentType(file);
     if (!type) return formError("Unsupported video type. Use MP4, WebM or MOV.");
     const profile = document.querySelector('input[name="profile"]:checked').value;
-    lastJob = { lat: loc.lat, lon: loc.lon, profile, file, type };
+    lastJob = { lat: loc.lat, lon: loc.lon, profile, file, type, picked: { city: loc.city, gps: !!loc.gps } };
     run(lastJob);
   });
 
@@ -118,7 +118,7 @@
       const body = await window.api.poll(job_id, () => {});
       step("analyse", "done");
       step("done", "done");
-      showResult(body);
+      showResult(body, job.picked);
     } catch (err) {
       step(current, "failed");
       $("#progress-error-msg").textContent = friendly(err);
@@ -138,8 +138,8 @@
 
   // --- Result --------------------------------------------------------------
 
-  function showResult(body) {
-    window.renderResult($("#result"), body);
+  function showResult(body, picked) {
+    window.renderResult($("#result"), body, picked);
     show("result");
   }
 
