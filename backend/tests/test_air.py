@@ -323,54 +323,131 @@ def test_caveats_have_no_duplicates_and_one_waqi_reason(monkeypatch):
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload())
     out = combine.air_for(*RANCHI, token=None, now=NOW)
     assert len(out["caveats"]) == len(set(out["caveats"]))
-    assert [c for c in out["caveats"] if "WAQI" in c] == ["WAQI not queried (no WAQI_TOKEN)."]
+    assert [c for c in out["caveats"] if "WAQI" in c] == [f"WAQI not queried (no WAQI_TOKEN), {combine.CORRECTION_NOTE}"]
 
 
-# --- WAQI failure modes: no station vs unavailable -------------------------------------------------
+# --- WAQI lookup: no station vs stale/far station vs unavailable; one merged caveat ---------------------
+
+HYD = (17.385, 78.4867)
 
 
-def _waqi_returns(monkeypatch, waqi_result):
+def _route(monkeypatch, geo, bounds=(), search=(), uid=None):
+    """Fake WAQI by endpoint (+ Open-Meteo). An Exception as `geo` is raised for every WAQI call."""
     def fake_get_json(url, params=None, timeout=10):
         if "waqi" not in url:
             return openmeteo_payload()
-        if isinstance(waqi_result, Exception):
-            raise waqi_result
-        return waqi_result
+        if isinstance(geo, Exception):
+            raise geo
+        if "/feed/geo:" in url:
+            return geo
+        if "map/bounds" in url:
+            return {"status": "ok", "data": list(bounds)}
+        if "/search/" in url:
+            return {"status": "ok", "data": list(search)}
+        if "/feed/@" in url:
+            return uid
+        raise AssertionError(url)
     monkeypatch.setattr(http, "get_json", fake_get_json)
 
 
-def test_no_station_caveat(monkeypatch):
-    _waqi_returns(monkeypatch, {"status": "nope", "data": "can not connect"})  # live Ranchi response
+NOPE = {"status": "nope", "data": "can not connect"}  # live answer for Ranchi and Hyderabad
+
+
+def _station_caveats(out):
+    return [c for c in out["caveats"] if "station" in c.lower() or "WAQI" in c or "scaled" in c]
+
+
+def test_ranchi_no_official_station(monkeypatch):
+    _route(monkeypatch, NOPE)
     out = combine.air_for(*RANCHI, token="t", now=NOW)
-    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
-    assert out["air"]["confidence"] == "low"
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled" and out["air"]["confidence"] == "low"
     assert out["air"]["modelled"]["pm25"] == pytest.approx(30 * combine.CAMS_CORRECTION)
-    assert combine.NO_STATION_NOTE in out["caveats"]
-    assert not any("WAQI unavailable" in c for c in out["caveats"])
+    assert _station_caveats(out) == [
+        f"No official station within 25 km; the nearest is Jamshedpur (~110 km), {combine.CORRECTION_NOTE}"]
+    assert out["caveats"][0] == _station_caveats(out)[0]  # first caveat (the page leads with it)
 
 
-def test_far_station_gets_no_station_caveat(monkeypatch):
-    _waqi_returns(monkeypatch, waqi_payload(geo=(22.80, 86.20)))  # ~107 km
+def test_no_station_names_nearest_official():
+    assert waqi.official_within(*RANCHI) == []
+    n = waqi.official_by_distance(*RANCHI)[0]
+    assert (n["code"], n["city"], n["dist_km"]) == ("JH01", "Jamshedpur", 108.4)
+    assert combine.no_station_note(n) == "No official station within 25 km; the nearest is Jamshedpur (~110 km)"
+    assert combine.no_station_note({"city": "X", "dist_km": 31.6}) == \
+        "No official station within 25 km; the nearest is X (~32 km)"
+    assert combine.no_station_note(None) == combine.NO_STATION_NOTE
+
+
+def test_hyderabad_stations_stopped_reporting(monkeypatch):
+    hit = {"uid": 14135, "aqi": "-", "time": {"tz": "+05:30", "stime": "2026-06-23 10:00:00"},
+           "station": {"name": "New Malakpet, Hyderabad, India", "geo": [17.3714, 78.5052]}}
+    far_hit = {**hit, "station": {"name": "Somewhere else", "geo": [18.5, 79.5]}}
+    _route(monkeypatch, NOPE, search=[far_hit, hit])
+    out = combine.air_for(*HYD, token="t", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    (c,) = _station_caveats(out)
+    assert c.startswith("The nearest official station, New Malakpet, Hyderabad, India (2.5 km away), last reported "
+                        "108 days ago (23 Jun 2026), so this uses the CAMS model estimate")
+    assert "No official monitoring station" not in c
+
+
+def test_official_station_unknown_to_waqi_search(monkeypatch):
+    _route(monkeypatch, NOPE, search=[])
+    out = combine.air_for(*HYD, token="t", now=NOW)
+    (c,) = _station_caveats(out)
+    assert c.startswith("The nearest official station, TG08, Hyderabad (1.3 km away), is not reporting to WAQI, so this")
+
+
+def test_geo_feed_fails_but_map_has_live_station(monkeypatch):
+    live = {"uid": 1, "lat": 23.36, "lon": 85.33, "aqi": "163", "station": {"name": "Live", "time": "x"}}
+    _route(monkeypatch, NOPE, bounds=[live], uid=waqi_payload())
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["used"] == "measured" and out["air"]["measured"]["station"] == "Test Station, Ranchi"
+    assert not any("scaled" in c for c in out["caveats"])
+
+
+def test_far_station_caveat_names_it(monkeypatch):
+    _route(monkeypatch, waqi_payload(geo=(22.80, 86.20)))  # ~107 km
     out = combine.air_for(*RANCHI, token="t", now=NOW)
     assert out["air"]["measured"] is not None and out["air"]["used"] == "modelled"
-    assert combine.NO_STATION_NOTE in out["caveats"]
-    assert any("km away" in c for c in out["caveats"])
+    (c,) = _station_caveats(out)[:1]
+    assert c.startswith("The nearest station, Test Station, Ranchi, is ") and "km away (more than 25 km), so this" in c
+    assert not any("No official monitoring station" in x for x in out["caveats"])
+
+
+def test_stale_station_caveat_gives_age(monkeypatch):
+    _route(monkeypatch, waqi_payload(iso="2026-10-09T05:00:00+05:30"))  # NOW is 10:20
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    c = _station_caveats(out)[0]
+    assert c.startswith("The nearest station, Test Station, Ranchi (") and "last updated 5 h ago (more than 3 h), so" in c
+
+
+def test_one_station_caveat_not_two(monkeypatch):
+    for geo in (NOPE, waqi_payload(geo=(22.80, 86.20)), waqi_payload(iso="2026-10-09T05:00:00+05:30")):
+        _route(monkeypatch, geo)
+        out = combine.air_for(*RANCHI, token="t", now=NOW)
+        assert sum("scaled x1.25" in c for c in out["caveats"]) == 1
+        assert not any("No usable station reading" in c or c.startswith("Nearest station") for c in out["caveats"])
 
 
 def test_invalid_key_is_unavailable(monkeypatch):
-    _waqi_returns(monkeypatch, {"status": "error", "data": "Invalid key"})
+    _route(monkeypatch, {"status": "error", "data": "Invalid key"})
     out = combine.air_for(*RANCHI, token="bad", now=NOW)
     assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
-    assert "WAQI unavailable (InvalidKeyError: WAQI error: Invalid key)." in out["caveats"]
-    assert combine.NO_STATION_NOTE not in out["caveats"]
+    assert _station_caveats(out) == [
+        f"WAQI unavailable (InvalidKeyError: WAQI error: Invalid key), {combine.CORRECTION_NOTE}"]
 
 
 def test_timeout_is_unavailable(monkeypatch):
-    _waqi_returns(monkeypatch, TimeoutError("timed out"))
+    _route(monkeypatch, TimeoutError("timed out"))
     out = combine.air_for(*RANCHI, token="t", now=NOW)
     assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
-    assert "WAQI unavailable (TimeoutError: timed out)." in out["caveats"]
-    assert combine.NO_STATION_NOTE not in out["caveats"]
+    assert _station_caveats(out) == [f"WAQI unavailable (TimeoutError: timed out), {combine.CORRECTION_NOTE}"]
+
+
+def test_official_index():
+    assert waqi.official_within(*RANCHI) == []
+    hyd = waqi.official_within(*HYD)
+    assert len(hyd) == 11 and hyd[0]["code"] == "TG08" and hyd[0]["dist_km"] == 1.3
 
 
 def test_forecast_tomorrow_split_by_date(monkeypatch):
@@ -420,3 +497,52 @@ def test_non_ist_open_meteo_payload_is_rejected(monkeypatch, offset):
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: payload)
     with pytest.raises(ValueError, match="no air data"):  # no token + rejected CAMS -> nothing to answer with
         combine.air_for(*RANCHI, token=None, now=UTC_1230)
+
+
+def test_station_caveat_is_first(monkeypatch):
+    cases = [(NOPE, RANCHI), ({"status": "error", "data": "Invalid key"}, RANCHI),
+             (waqi_payload(geo=(22.80, 86.20)), RANCHI), (waqi_payload(iso="2026-10-09T05:00:00+05:30"), RANCHI)]
+    for geo, where in cases:
+        _route(monkeypatch, geo)
+        out = combine.air_for(*where, token="t", now=NOW)
+        assert "scaled x1.25" in out["caveats"][0], out["caveats"]
+    _route(monkeypatch, waqi_payload())  # usable station: no station caveat, CPCB note first
+    assert combine.air_for(*RANCHI, token="t", now=NOW)["caveats"][0].startswith("CPCB-style AQI")
+
+
+def test_lookup_raises_with_nearest_for_ranchi(monkeypatch):
+    _route(monkeypatch, NOPE)
+    with pytest.raises(waqi.NoStationError) as e:
+        waqi.lookup(*RANCHI, "t")
+    assert e.value.nearest["city"] == "Jamshedpur" and e.value.nearest["dist_km"] == 108.4
+
+
+def test_open_meteo_retried_once(monkeypatch, capsys):
+    calls = []
+
+    def flaky(url, params=None, timeout=10):
+        if "waqi" in url:
+            return NOPE
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("timed out")
+        return openmeteo_payload()
+    monkeypatch.setattr(http, "get_json", flaky)
+    out = combine.air_for(*RANCHI, token=None, now=NOW)
+    assert len(calls) == 2 and out["air"]["modelled"] is not None
+    assert not any("Open-Meteo unavailable" in c for c in out["caveats"])
+    assert '"open_meteo": "failed", "attempt": 1' in capsys.readouterr().out
+
+
+def test_open_meteo_gives_up_after_two(monkeypatch):
+    calls = []
+
+    def down(url, params=None, timeout=10):
+        if "waqi" in url:
+            return waqi_payload()
+        calls.append(1)
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(http, "get_json", down)
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert len(calls) == 2 and out["air"]["used"] == "measured"
+    assert "Open-Meteo unavailable (TimeoutError: timed out)." in out["caveats"]

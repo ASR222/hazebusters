@@ -21,7 +21,8 @@ MAX_TOKENS = 700
 SYSTEM = """You write short outdoor air-quality advice for one place in India, in English and in Hindi.
 
 You get a JSON object of facts computed by our pipeline. Rules:
-- Write 2-3 short sentences in English and 2-3 short sentences in Hindi with the same meaning.
+- Write 2-3 short sentences in English and 2-3 short sentences in Hindi with the same meaning. Never more than
+  `max_sentences` sentences per language (the app adds its own sentences after yours).
 - Start by stating the AQI number. Then the recommendation for the profile (school / outdoor worker / general public)
   that matches `outdoor`: yes = outdoor activity is fine; limit = keep outdoor activity short and light; no = keep
   activities indoors. If `for` is "tomorrow", the recommendation is for tomorrow and the AQI is the reading right now.
@@ -160,6 +161,7 @@ def advise(facts: dict, bedrock=None, max_sentences: int = MAX_SENTENCES) -> dic
     mid = model_id()
     if not mid:
         raise AdviceRejected("BEDROCK_MODEL_ID not set")
+    facts = {**facts, "max_sentences": max_sentences}
     t0 = time.monotonic()
     resp = (bedrock or client()).converse(
         modelId=mid,

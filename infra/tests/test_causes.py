@@ -33,6 +33,33 @@ def logit(p):
     return float(np.log(p / (1 - p)))
 
 
+class FakeYolo:
+    """YOLO11n stand-in: frame i gets cars[i] well-separated car boxes (class 2, score 0.9)."""
+
+    def __init__(self, cars=None, fail=False):
+        self.cars, self.fail, self.calls = cars, fail, 0
+
+    def run(self, names, feeds):
+        assert names == ["output0"] and feeds["images"].shape == (1, 3, 640, 640)
+        if self.fail:
+            raise RuntimeError("yolo boom")
+        n = self.cars[self.calls] if self.cars else 0
+        self.calls += 1
+        out = np.zeros((1, 84, 8400), np.float32)
+        for k in range(n):
+            out[0, :4, k] = [40 + 60 * k, 320, 40, 40]  # cx, cy, w, h: no overlaps
+            out[0, 4 + 2, k] = 0.9
+        return [out]
+
+
+@pytest.fixture(autouse=True)
+def yolo(monkeypatch):
+    """Every test gets a fake YOLO (never the real model files); tests can swap it."""
+    y = FakeYolo()
+    monkeypatch.setattr(causes, "_yolo", y)
+    return y
+
+
 @pytest.fixture
 def model(monkeypatch):
     head = {"weight": np.random.default_rng(1).standard_normal((2, 1280)).astype(np.float32),
@@ -102,7 +129,7 @@ def test_detect_clear_clip(model):
     out, cav, ran = causes.detect(frames(4), "job1", FakeS3(), "b")
     assert ran and cav == []
     assert out["smoke"] == {"present": False, "prob": 0.05} and out["fire"]["present"] is False
-    assert out["gradcam_key"] is None and out["boxes"] == [] and out["vehicle_count"] is None
+    assert out["gradcam_key"] is None and out["boxes"] == [] and out["vehicle_count"] == 0
     assert out["frames_used"] == 4
     assert s.inputs[0].shape == (4, 3, 224, 224)
 
@@ -139,7 +166,7 @@ def test_model_error_falls_back_to_stub(model):
     model(fail=True)
     out, cav, ran = causes.detect(frames(5), "job1", FakeS3(), "b")
     assert not ran and cav == ["Smoke check unavailable for this clip"]
-    assert out == causes.stub(5)
+    assert out == {**causes.stub(5), "vehicle_count": 0}  # vehicles still counted
 
 
 def test_model_not_loaded_falls_back(monkeypatch, tmp_path):
@@ -174,3 +201,43 @@ def test_load_failure_is_recorded(tmp_path, monkeypatch):
     monkeypatch.setattr(causes, "_session", None)
     causes.load(tmp_path)  # no model files there
     assert causes._session is None and causes._load_error is not None
+
+
+# --- vehicles (YOLO11n) -------------------------------------------------------------------------------
+
+
+def test_vehicle_count_is_median_of_frames(model, monkeypatch):
+    model([[0.0, 0.0]] * 5)
+    monkeypatch.setattr(causes, "_yolo", FakeYolo(cars=[0, 3, 4, 4, 9]))
+    out, cav, ran = causes.detect(frames(5), "job1", FakeS3(), "b")
+    assert out["vehicle_count"] == 4 and cav == [] and out["boxes"] == []
+
+
+def test_vehicle_failure_is_independent(model, monkeypatch):
+    model([[logit(0.8), 0.0]] * 3)
+    monkeypatch.setattr(causes, "_yolo", FakeYolo(fail=True))
+    out, cav, ran = causes.detect(frames(3), "job1", FakeS3(), "b")
+    assert ran and out["smoke"]["present"] is True  # smoke result kept
+    assert out["vehicle_count"] is None and cav == ["Vehicle count unavailable for this clip"]
+
+
+def test_both_models_fail(model, monkeypatch):
+    model(fail=True)
+    monkeypatch.setattr(causes, "_yolo", FakeYolo(fail=True))
+    out, cav, ran = causes.detect(frames(2), "job1", FakeS3(), "b")
+    assert not ran and out == causes.stub(2)
+    assert cav == ["Smoke check unavailable for this clip", "Vehicle count unavailable for this clip"]
+
+
+def test_yolo_lazy_load_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(causes, "_yolo", None)
+    monkeypatch.setattr(causes, "MODEL_DIR", tmp_path)
+    assert causes.count_vehicles(frames(1)) is None and causes._yolo_error is not None
+
+
+def test_vendored_vehicles_matches_ml():
+    ml = causes.MODEL_DIR.parents[2] / "ml" / "src" / "hazeml" / "vehicles.py"
+    if not ml.exists():
+        pytest.skip("ml/ not in this checkout")
+    ours = (causes.MODEL_DIR.parent / "vehicles.py").read_text().split("\n", 3)[3]
+    assert ours == ml.read_text().removeprefix('"""')  # identical apart from our 3-line provenance header

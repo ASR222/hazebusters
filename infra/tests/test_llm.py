@@ -52,6 +52,7 @@ def test_good_json_is_used():
     assert sent["best_window"] == {"en": "from 9 AM to 12 noon", "hi": "सुबह 9 बजे से दोपहर 12 बजे तक"}
     assert sent["health_statement_en"] == advice.CPCB_HEALTH["Moderate"]
     assert sent["causes"] == {"available": False}  # stub causes never reach the model
+    assert sent["max_sentences"] == llm.MAX_SENTENCES
 
 
 def test_fenced_json_is_accepted():
@@ -253,3 +254,9 @@ def test_bedrock_mentioning_absent_smoke_still_falls_back(capsys):
     clear = {"smoke": {"present": False, "prob": 0.1}, "fire": {"present": False, "prob": 0.1}}
     out, _ = advice.build(AIR, "school", clear, True, bedrock=FakeBedrock(json.dumps(bad, ensure_ascii=False)))
     assert out["source"] == "template" and "mentions smoke but it is not present" in capsys.readouterr().out
+
+
+def test_sentence_budget_sent_to_model():
+    fake = FakeBedrock(json.dumps(GOOD, ensure_ascii=False))
+    advice.build(AIR, "school", LIKELY_SMOKE, True, bedrock=fake)
+    assert json.loads(fake.calls[0]["messages"][0]["content"][0]["text"])["max_sentences"] == llm.MAX_SENTENCES - 1

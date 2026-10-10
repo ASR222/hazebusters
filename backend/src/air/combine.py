@@ -17,19 +17,23 @@ Rules (CLAUDE.md §3; rule table with CPCB health statements in decision_rules.m
   scaled by CAMS_CORRECTION before the AQI, the decision and the forecast, and a caveat says so.
 """
 
+import json
 import math
 from datetime import datetime, timedelta
 
 from air import openmeteo, waqi
 
 MAX_STATION_KM = 25.0
+OPENMETEO_ATTEMPTS = 2
 MAX_STATION_AGE = timedelta(hours=3)
 
 # CAMS daily PM2.5 ran ~0.8x the ground stations: median CAMS/station ratio 0.78 (Delhi), 0.79 (Hyderabad),
 # 0.81 (Patna), 2023-24 (ml/runs/cams_validation/summary.json, from ml/validate_cams.py; ml/RESULTS.md §2).
 CAMS_CORRECTION = 1.25
 
-NO_STATION_NOTE = "No official monitoring station near this location; using CAMS model estimate."
+NO_STATION_NOTE = "No official monitoring station near this location"
+CORRECTION_NOTE = (f"so this uses the CAMS model estimate with PM2.5/PM10 scaled x{CAMS_CORRECTION} (CAMS read about "
+                   "0.8x ground stations in Delhi, Hyderabad and Patna, daily PM2.5, 2023-24).")
 
 # Hours (local) in which a profile would go outdoors; best_window is clipped to these.
 PROFILE_WINDOWS = {"school": (7, 17), "worker": (6, 19), "general": (6, 21)}
@@ -123,12 +127,56 @@ def _day(forecast: list[dict], now: datetime, offset: int) -> list[dict]:
     return [s for s in forecast if datetime.fromisoformat(s["time"]).date() == day]
 
 
+def _approx_km(d: float) -> str:
+    return f"~{round(d, -1):.0f} km" if d >= 50 else f"~{d:.0f} km"
+
+
+def no_station_note(nearest: dict | None) -> str:
+    """No official station within 25 km, naming the nearest one from our index (no final full stop)."""
+    if not nearest:
+        return NO_STATION_NOTE
+    return f"No official station within {MAX_STATION_KM:.0f} km; the nearest is {nearest['city']} ({_approx_km(nearest['dist_km'])})"
+
+
+def _age(updated_at: str, now: datetime) -> str:
+    seconds = (now - datetime.fromisoformat(updated_at)).total_seconds()
+    if seconds < 3600:
+        return f"{max(int(seconds // 60), 0)} min ago"
+    if seconds < 48 * 3600:
+        return f"{seconds / 3600:.0f} h ago"
+    return f"{seconds / 86400:.0f} days ago ({datetime.fromisoformat(updated_at):%d %b %Y})"
+
+
+def station_reason(measured: dict | None, nearest: dict | None, waqi_note: str | None, now: datetime) -> str | None:
+    """Why there's no usable station reading (one clause, no final full stop), or None if the station is usable."""
+    if measured is not None:
+        far, stale = measured["dist_km"] > MAX_STATION_KM, not _fresh(measured, now)
+        name, d = measured["station"], measured["dist_km"]
+        if far and stale:
+            return f"The nearest station, {name}, is {d} km away and last updated {_age(measured['updated_at'], now)}"
+        if far:
+            return f"The nearest station, {name}, is {d} km away (more than {MAX_STATION_KM:.0f} km)"
+        if stale:
+            return (f"The nearest station, {name} ({d} km away), last updated "
+                    f"{_age(measured['updated_at'], now)} (more than 3 h)")
+        return None
+    if nearest is not None:
+        where = f"The nearest official station, {nearest['station']} ({nearest['dist_km']} km away),"
+        if nearest.get("updated_at"):
+            return f"{where} last reported {_age(nearest['updated_at'], now)}"
+        return f"{where} is not reporting to WAQI"
+    return (waqi_note or "No WAQI station reading available").rstrip(".")
+
+
 def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], now: datetime,
-            profile: str = "general", corrected: bool = False, waqi_note: str | None = None) -> dict:
+            profile: str = "general", corrected: bool = False, waqi_note: str | None = None,
+            nearest: dict | None = None) -> dict:
     """-> {"air", "forecast_today", "forecast_tomorrow", "decision", "caveats"} (contract fragments).
 
     `forecast`: today's and tomorrow's 3-hour slots. `corrected`: modelled/forecast PM were already
-    scaled by CAMS_CORRECTION (air_for does this whenever the station isn't usable)."""
+    scaled by CAMS_CORRECTION (air_for does this whenever the station isn't usable). `nearest`: the nearest
+    official station when WAQI has no reading (waqi.lookup). The station situation and the CAMS correction are
+    one caveat: "<why no usable station>, so this uses the CAMS model estimate with PM scaled x1.25 (...)"."""
     if profile not in PROFILE_WINDOWS:
         raise ValueError(f"unknown profile {profile!r}; choose from {sorted(PROFILE_WINDOWS)}")
     used = choose_source(measured, modelled, now)
@@ -138,22 +186,18 @@ def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], 
     caveats = ["CPCB-style AQI from hourly PM (official CPCB AQI uses 24-h averages and >= 3 pollutants)."]
     if modelled is not None:
         caveats.append("CAMS is a model value for a ~45 km grid cell, not a measurement.")
+    why = station_reason(measured, nearest, waqi_note, now)
+    # The station/CAMS caveat goes first (the result page leads with the first caveat).
     if corrected:
-        caveats.append(f"No usable station reading (none, > {MAX_STATION_KM:.0f} km away, or >= 3 h old), so CAMS "
-                       f"PM2.5/PM10 were scaled x{CAMS_CORRECTION} before the AQI and decision: CAMS read about 0.8x "
-                       "ground stations in Delhi, Hyderabad and Patna (daily PM2.5, 2023-24).")
+        caveats.insert(0, f"{why}, {CORRECTION_NOTE}")
+    elif why and used == "measured":  # CAMS unavailable, so a far/stale station is used anyway
+        caveats.insert(0, f"{why}; it is used anyway because the CAMS model value is unavailable.")
+    elif why:
+        caveats.insert(0, f"{why}.")
     if not forecast:
         caveats.append("No CAMS forecast; the decision uses the current AQI only.")
-    if measured is None:
-        caveats.append(waqi_note or "No WAQI station reading available.")
-    else:
+    if measured is not None:
         caveats.append("WAQI US AQI sub-indices converted back to µg/m³ (US EPA 2012 breakpoints).")
-        if measured["dist_km"] > MAX_STATION_KM:
-            if used == "modelled":
-                caveats.append(NO_STATION_NOTE)
-            caveats.append(f"Nearest station is {measured['dist_km']} km away.")
-        if not _fresh(measured, now):
-            caveats.append(f"Nearest station last updated {measured['updated_at']}.")
 
     return {
         "air": {"measured": measured, "modelled": modelled, "aqi_cpcb": chosen["aqi_cpcb"], "band": chosen["band"],
@@ -168,26 +212,30 @@ def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], 
 def air_for(lat: float, lon: float, token: str | None, now: datetime | None = None, profile: str = "general") -> dict:
     """Fetch both sources and combine. A failing source becomes None plus a caveat."""
     now = now or datetime.now().astimezone()
-    measured, waqi_note = None, None
+    measured, nearest, waqi_note = None, None, None
     if token:
         try:
-            measured = waqi.parse(waqi.fetch(lat, lon, token), lat, lon)
-            if measured is None:
+            measured, nearest = waqi.lookup(lat, lon, token)
+            if measured is None and nearest is None:
                 waqi_note = "Nearest WAQI station reports no PM2.5 or PM10."
-        except waqi.NoStationError:
-            waqi_note = NO_STATION_NOTE
+        except waqi.NoStationError as e:
+            waqi_note = no_station_note(e.nearest)
         except Exception as e:  # invalid key, HTTP error, timeout: a real "unavailable"
             waqi_note = f"WAQI unavailable ({type(e).__name__}: {e})."
     else:
         waqi_note = "WAQI not queried (no WAQI_TOKEN)."
     scale = 1.0 if station_usable(measured, now) else CAMS_CORRECTION  # i.e. whenever `used` will be modelled
     modelled, forecast, notes = None, [], []
-    try:
-        hours = openmeteo.parse_hourly(openmeteo.fetch(lat, lon))
-        modelled, forecast = openmeteo.modelled_now(hours, now, scale), openmeteo.forecast_3h(hours, scale)
-    except Exception as e:
-        notes.append(f"Open-Meteo unavailable ({type(e).__name__}: {e}).")
+    for attempt in range(1, OPENMETEO_ATTEMPTS + 1):  # one retry: a single slow response (10 s timeout) seen live
+        try:
+            hours = openmeteo.parse_hourly(openmeteo.fetch(lat, lon))
+            modelled, forecast = openmeteo.modelled_now(hours, now, scale), openmeteo.forecast_3h(hours, scale)
+            break
+        except Exception as e:
+            print(json.dumps({"open_meteo": "failed", "attempt": attempt, "reason": f"{type(e).__name__}: {e}"}))
+            if attempt == OPENMETEO_ATTEMPTS:
+                notes.append(f"Open-Meteo unavailable ({type(e).__name__}: {e}).")
     out = combine(measured, modelled, forecast, now, profile,
-                  corrected=scale != 1.0 and modelled is not None, waqi_note=waqi_note)
+                  corrected=scale != 1.0 and modelled is not None, waqi_note=waqi_note, nearest=nearest)
     out["caveats"] = list(dict.fromkeys(out["caveats"] + notes))
     return out

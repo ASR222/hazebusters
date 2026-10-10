@@ -2,12 +2,14 @@
 
     python infra/e2e_test.py path/to/test.mp4 path/to/test.webm [--api URL] [--stack hazebusters]
 
-Per clip: POST /jobs (Ranchi, school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
+Per clip: POST /jobs (--place, default Ranchi; school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
 until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
 and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files) -> check smoke: clips
 named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url) and Bedrock advice carrying the smoke
 line; all others must
-come back without smoke. Exit 1 on any failure.
+come back without smoke -> vehicle_count must be an int (the YOLO model ran); clips named with --expect-vehicles
+must have at least 1; clips named with --expect-skip must be rejected by the quality gate (causes skipped,
+caveat, still status done). Exit 1 on any failure.
 """
 
 import argparse
@@ -19,7 +21,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-RANCHI = (23.3441, 85.3096)
+PLACES = {"Ranchi": (23.3441, 85.3096), "Hyderabad": (17.385, 78.4867), "Delhi": (28.6139, 77.209)}
 TYPES = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
 CONTRACT = Path(__file__).resolve().parents[1] / "backend" / "contract.json"
 REGION = "ap-south-1"
@@ -54,8 +56,9 @@ def key_diff(expected, actual, path="") -> list[str]:
 
 def check(result: dict) -> list[str]:
     errs = key_diff(json.loads(CONTRACT.read_text()), result)
-    if not 8 <= result["causes"]["frames_used"] <= 12:
-        errs.append(f"frames_used = {result['causes']['frames_used']} (expected ~10)")
+    c = result["causes"]
+    if not 8 <= c["frames_used"] + c["frames_rejected"] <= 12:
+        errs.append(f"frames_used + frames_rejected = {c['frames_used'] + c['frames_rejected']} (expected ~10 sampled)")
     if not result["forecast_tomorrow"]:
         errs.append("forecast_tomorrow empty")
     if result["decision"]["for"] not in ("today", "tomorrow"):
@@ -95,6 +98,16 @@ def check_audio(got: dict, clip: Path, save_dir: Path | None) -> list[str]:
     return errs
 
 
+def check_vehicles(got: dict, clip: Path, expect: bool) -> list[str]:
+    n = got["result"]["causes"]["vehicle_count"]
+    print(f"[{clip.name}] vehicle_count {n}")
+    if not isinstance(n, int):
+        return [f"vehicle_count = {n!r} (vehicle model did not run)"]
+    if expect and n < 1:
+        return ["expected vehicles, got 0"]
+    return []
+
+
 def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> list[str]:
     c = got["result"]["causes"]
     print(f"[{clip.name}] smoke {c['smoke']}, fire {c['fire']}, gradcam_key {c['gradcam_key']}")
@@ -120,11 +133,31 @@ def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> l
     return errs
 
 
-def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False) -> bool:
+SKIP_CAVEAT = "Couldn't check what's in this clip"
+
+
+def check_skipped(got: dict, clip: Path) -> list[str]:
+    """Quality gate rejected the clip: models skipped, caveat present, air/advice still there."""
+    r = got["result"]
+    c = r["causes"]
+    print(f"[{clip.name}] quality: frames_used {c['frames_used']}, rejected {c['frames_rejected']}, "
+          f"reasons {c['reject_reasons']}")
+    errs = []
+    if c["frames_used"] >= 3:
+        errs.append(f"frames_used = {c['frames_used']}, expected < 3 (gate should reject)")
+    if c["smoke"]["present"] or c["fire"]["present"] or c["vehicle_count"] is not None or c["gradcam_key"]:
+        errs.append(f"causes not skipped: {c}")
+    if not any(x.startswith(SKIP_CAVEAT) for x in r["caveats"]):
+        errs.append("quality caveat missing")
+    return errs
+
+
+def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False, place: str = "Ranchi",
+        expect_vehicles: bool = False, expect_skip: bool = False) -> bool:
     ctype = TYPES[clip.suffix]
     t0 = time.monotonic()
     status, body = request("POST", f"{api}/jobs", json.dumps(
-        {"lat": RANCHI[0], "lon": RANCHI[1], "profile": "school", "content_type": ctype}).encode(),
+        {"lat": PLACES[place][0], "lon": PLACES[place][1], "profile": "school", "content_type": ctype}).encode(),
         {"Content-Type": "application/json"})
     if status != 201:
         print(f"[{clip.name}] POST /jobs -> {status}: {body.decode()}")
@@ -151,7 +184,13 @@ def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool =
     if got["status"] != "done":
         print(f"[{clip.name}] FAILED: {got['error']}")
         return False
-    errs = check(got["result"]) + check_audio(got, clip, save_dir) + check_smoke(got, clip, expect_smoke, save_dir)
+    errs = check(got["result"]) + check_audio(got, clip, save_dir)
+    if expect_skip:
+        errs += check_skipped(got, clip)
+    else:
+        errs += check_smoke(got, clip, expect_smoke, save_dir) + check_vehicles(got, clip, expect_vehicles)
+        if any(x.startswith(SKIP_CAVEAT) for x in got["result"]["caveats"]):
+            errs.append("quality gate skipped a clip that should pass")
     print(f"[{clip.name}] checks: " + ("OK" if not errs else "; ".join(errs)))
     return not errs
 
@@ -162,11 +201,18 @@ def main() -> None:
     p.add_argument("--api", help="HTTP API base URL (default: the stack's ApiUrl output)")
     p.add_argument("--stack", default="hazebusters")
     p.add_argument("--save-audio", type=Path, help="directory to save the downloaded mp3s and overlays")
+    p.add_argument("--place", choices=list(PLACES), default="Ranchi", help="location sent with the job")
+    p.add_argument("--expect-skip", action="append", default=[], metavar="CLIP_NAME",
+                   help="file name of a clip the quality gate must reject (causes skipped + caveat; repeatable)")
+    p.add_argument("--expect-vehicles", action="append", default=[], metavar="CLIP_NAME",
+                   help="file name of a clip that must come back with vehicle_count >= 1 (repeatable)")
     p.add_argument("--expect-smoke", action="append", default=[], metavar="CLIP_NAME",
                    help="file name of a clip that must come back with smoke (repeatable)")
     args = p.parse_args()
     api = (args.api or api_url(args.stack)).rstrip("/")
-    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke) for clip in args.clips]
+    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke, args.place, clip.name in args.expect_vehicles,
+                   clip.name in args.expect_skip)
+               for clip in args.clips]
     sys.exit(0 if all(results) else 1)
 
 
