@@ -130,20 +130,17 @@
       <span class="${cls}">${label}${score}</span></div>`;
   }
 
-  // Quality-gate reject codes in plain words (gate checks: CLAUDE.md §4); unknown codes are shown with spaces.
-  const REJECT_WORDS = {
-    night: "too dark", dark: "too dark", too_dark: "too dark", low_light: "too dark",
-    blur: "too blurry", blurry: "too blurry", too_blurry: "too blurry", shaky: "too shaky",
-    no_sky: "no sky or street in view", sky: "no sky or street in view",
-    indoor: "looks like indoors", indoors: "looks like indoors",
-  };
+  // Quality-gate reject codes (processor) in plain words; unknown codes are shown with spaces.
+  const REJECT_WORDS = { dark: "too dark", blur: "too blurry", no_sky: "no sky or street in view" };
+  const GATE_MIN_FRAMES = 3;  // the processor skips causes when fewer frames pass the gate
+  const GATE_CAVEAT = "Couldn't check what's in this clip";
   const plainReason = (code) => REJECT_WORDS[String(code).toLowerCase()] || String(code).replace(/_/g, " ");
 
-  // The gate rejected the whole clip: every frame rejected, or a quality-gate caveat.
+  // The processor skipped causes: too few frames passed the gate, or its caveat says so.
   function gateBlocked(r) {
     const c = r.causes;
-    if (c.frames_rejected > 0 && c.frames_used === 0) return true;
-    return (r.caveats || []).some((t) => /quality gate/i.test(String(t)));
+    if (c.frames_used < GATE_MIN_FRAMES && c.frames_rejected > 0) return true;
+    return (r.caveats || []).some((t) => String(t).startsWith(GATE_CAVEAT));
   }
 
   function causesCard(r, camUrl) {
