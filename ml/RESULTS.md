@@ -98,3 +98,38 @@ Band confusion with ×1.25 (rows = station, cols = CAMS): Delhi `[[199,104,1],[7
 - **It helps Delhi and Patna**: band agreement +7.0 / +5.1 points, Very Poor/Severe caught 67 → 125 (Delhi) and 46 → 80 (Patna), MAE down. The price is more over-calls: Very Poor/Severe false alarms 1 → 10 (Delhi) and 8 → 20 (Patna), and in Delhi Good/Satisfactory days called Moderate/Poor rise 44 → 104.
 - Median bias goes to about zero in all three cities, but **this is in-sample**: the factor was chosen from these same three cities' ratios, so these numbers flatter it. It has not been checked on any other city.
 - Net for the product: the correction trades leniency on bad days for over-caution on clean days. For a "should the kids go out" decision that trade is defensible, but say so in the caveat/writeup rather than presenting ×1.25 as accurate. A city- or level-dependent correction would need more cities than we have.
+
+## 3. Smoke/fire classifier (Fri 9 Oct 2026)
+
+Run: `ml/runs/smokefire/20261009-220554_efficientnet_b0_s0/` (`uv run python -m hazeml.train_smokefire`); numbers below are from its `train.log`, `report.json` / `report.md` and `export_report.json`.
+
+**Data and split.** D-Fire (CC0 1.0, 21,527 images; downloaded from the Hugging Face mirror `badsaarow/d-fire` because the official OneDrive links refuse scripted downloads; every per-class image and box count matches the D-Fire README). Split v2 in `ml/splits/dfire.json`: dHash groups (Hamming ≤ 6) plus consecutive `AoF` video frames linked at Hamming ≤ 15, with a 10% group cap (hit 4 times; 4 of 6,051 links skipped). Largest group 1,882 images (8.7%).
+
+| split | clear | smoke | fire | smoke + fire | total |
+|---|---|---|---|---|---|
+| train | 7,318 | 4,271 | 943 | 3,317 | 15,849 |
+| val | 1,260 | 798 | 108 | 669 | 2,835 |
+| test | 1,260 | 798 | 113 | 672 | 2,843 |
+
+Leak check: 612 of 8,383 consecutive `AoF` frame pairs sit in different splits, **none** within Hamming distance 15 (min bin 16–23: 114; median 29) — v1 had 782, 88 of them at distance 7–15.
+
+**Setup.** EfficientNet-B0 (ImageNet), 2 sigmoid outputs (smoke, fire), BCEWithLogits with pos_weight from train (smoke 1.09, fire 2.72), whole frame squashed to 224×224, flip + RandomResizedCrop 0.6–1 + moderate colour jitter, bf16, batch 32, AdamW (head 1e-3, backbone 1e-4), early stopping on val mean AP (patience 4), seed 0. Stopped after epoch 10; best epoch 6 (val AP smoke 0.987, fire 0.979). Per-label thresholds = max F1 on val: smoke 0.359, fire 0.667.
+
+**D-Fire test (2,843 images, grouped split):**
+
+| label | positives / n | AP | precision | recall | F1 |
+|---|---|---|---|---|---|
+| smoke | 1,470 / 2,843 | 0.979 | 91.6% | 93.4% | 0.925 |
+| fire | 785 / 2,843 | 0.982 | 94.2% | 95.0% | 0.946 |
+
+Exact 4-way match 89.5%. Confusion (rows = true, cols = predicted; clear / smoke / fire / smoke+fire):
+clear `1194 / 58 / 4 / 4` · smoke `87 / 673 / 0 / 38` · fire `5 / 6 / 44 / 58` · smoke+fire `0 / 28 / 10 / 634`.
+Weak spot: **fire-only images** (113) are mostly called smoke+fire (58) — the fire flag is right, the extra smoke flag isn't. 87 smoke-only images are missed as clear.
+
+**Pyro-SDIS, external test (12,378 images from 209 fixed wildfire cameras, smoke label only, val-picked smoke threshold):**
+- Overall: AP 0.845, precision 81.1%, **recall 13.4%** (1,436 / 10,744), **false-positive rate 20.5%** on its 1,634 negatives (335).
+- **The AP is below chance**: 86.8% of Pyro-SDIS images contain smoke, so a random score already gets AP ≈ 0.868.
+- By camera (macro): mean recall 27.0% over 118 cameras with smoke; mean FPR 20.6% over 174 cameras with negatives; mean AP 0.804 over 83 cameras with both.
+- Reading: the model **does not transfer** to distant, small wildfire plumes on wide-angle mountain cameras (they shrink to a few pixels at 224×224), and Pyro's negatives are hard look-alikes (clouds, haze). D-Fire's test numbers are in-domain and optimistic for our use; neither dataset shows Indian urban burning (garbage, crop residue), so our own clips are the real test.
+
+**ONNX** (`smokefire.onnx`, 15.3 MB, opset 17; outputs `features` 1280×7×7 and `logits`): on 64 D-Fire test images, max |ONNX − torch| logits **2.1e-4**, features 1.2e-3. `ml/src/hazeml/cam.py` (numpy only) reproduces the ONNX logits from features + `head.npz` (GAP identity) to 5.7e-6. Six CAM overlays in `cam/` (not committed).

@@ -1,4 +1,5 @@
-"""Combine WAQI (measured) and CAMS (modelled) into the contract's `air`, `forecast_today` and `decision`.
+"""Combine WAQI (measured) and CAMS (modelled) into the contract's `air`, `forecast_today`,
+`forecast_tomorrow` and `decision`.
 
 Rules (CLAUDE.md §3; rule table with CPCB health statements in decision_rules.md):
 - Source: measured if the station is <= 25 km away and updated < 3 h ago, else modelled. Both are returned.
@@ -112,17 +113,18 @@ def decision(current_aqi: int, forecast: list[dict], now: datetime, profile: str
     return {"for": day, "outdoor": outdoor, "best_window": window, "reason_code": code}
 
 
-def _today(forecast: list[dict], now: datetime) -> list[dict]:
+def _day(forecast: list[dict], now: datetime, offset: int) -> list[dict]:
+    """Slots on the local date `offset` days after `now` (0 = today, 1 = tomorrow)."""
     if not forecast:
         return []
     tz = datetime.fromisoformat(forecast[0]["time"]).tzinfo
-    today = now.astimezone(tz).date()
-    return [s for s in forecast if datetime.fromisoformat(s["time"]).date() == today]
+    day = (now.astimezone(tz) + timedelta(days=offset)).date()
+    return [s for s in forecast if datetime.fromisoformat(s["time"]).date() == day]
 
 
 def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], now: datetime,
             profile: str = "general", corrected: bool = False, waqi_note: str | None = None) -> dict:
-    """-> {"air", "forecast_today", "decision", "caveats"} (contract fragments).
+    """-> {"air", "forecast_today", "forecast_tomorrow", "decision", "caveats"} (contract fragments).
 
     `forecast`: today's and tomorrow's 3-hour slots. `corrected`: modelled/forecast PM were already
     scaled by CAMS_CORRECTION (air_for does this whenever the station isn't usable)."""
@@ -155,7 +157,8 @@ def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], 
     return {
         "air": {"measured": measured, "modelled": modelled, "aqi_cpcb": chosen["aqi_cpcb"], "band": chosen["band"],
                 "used": used, "confidence": level, "confidence_reason": reason},
-        "forecast_today": _today(forecast, now),
+        "forecast_today": _day(forecast, now, 0),
+        "forecast_tomorrow": _day(forecast, now, 1),
         "decision": decision(chosen["aqi_cpcb"], forecast, now, profile),
         "caveats": list(dict.fromkeys(caveats)),
     }

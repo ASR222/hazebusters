@@ -83,11 +83,13 @@ def test_waqi_no_station_statuses(payload):
 # --- Open-Meteo -----------------------------------------------------------------------------
 
 
-def openmeteo_payload(pm25=None, pm10=None):
-    pm25 = pm25 or [20.0 + i for i in range(24)]
-    pm10 = pm10 or [40.0 + i for i in range(24)]
+def openmeteo_payload(pm25=None, pm10=None, days=1):
+    n = 24 * days
+    pm25 = pm25 or [20.0 + i % 24 for i in range(n)]
+    pm10 = pm10 or [40.0 + i % 24 for i in range(n)]
+    times = [f"2026-10-{9 + i // 24:02d}T{i % 24:02d}:00" for i in range(n)]
     return {"utc_offset_seconds": 19800, "hourly_units": {"pm2_5": "μg/m³", "pm10": "μg/m³"},
-            "hourly": {"time": [f"2026-10-09T{h:02d}:00" for h in range(24)], "pm2_5": pm25, "pm10": pm10}}
+            "hourly": {"time": times, "pm2_5": pm25, "pm10": pm10}}
 
 
 def test_openmeteo_request_params(monkeypatch):
@@ -264,6 +266,7 @@ def test_output_matches_contract_keys(monkeypatch):
     assert set(out["air"]["measured"]) == set(contract["air"]["measured"])
     assert set(out["air"]["modelled"]) == set(contract["air"]["modelled"])
     assert set(out["forecast_today"][0]) == set(contract["forecast_today"][0])
+    assert set(out) >= {"air", "forecast_today", "forecast_tomorrow", "decision", "caveats"}
     assert set(out["decision"]) == set(contract["decision"])
     assert set(out["decision"]["best_window"] or contract["decision"]["best_window"]) == {"start", "end"}
 
@@ -368,3 +371,17 @@ def test_timeout_is_unavailable(monkeypatch):
     assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
     assert "WAQI unavailable (TimeoutError: timed out)." in out["caveats"]
     assert combine.NO_STATION_NOTE not in out["caveats"]
+
+
+def test_forecast_tomorrow_split_by_date(monkeypatch):
+    contract = json.loads((Path(__file__).resolve().parents[1] / "contract.json").read_text())
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=2))
+    out = combine.air_for(*RANCHI, token=None, now=NOW)
+    assert [s["time"][:10] for s in out["forecast_today"]] == ["2026-10-09"] * 8
+    assert [s["time"][:10] for s in out["forecast_tomorrow"]] == ["2026-10-10"] * 8
+    assert set(out["forecast_tomorrow"][0]) == set(contract["forecast_tomorrow"][0])
+
+
+def test_forecast_tomorrow_empty_without_data(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=1))
+    assert combine.air_for(*RANCHI, token=None, now=NOW)["forecast_tomorrow"] == []

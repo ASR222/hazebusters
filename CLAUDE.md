@@ -51,7 +51,7 @@
 2. Record a 10 s clip with location.
 3. Air: nearest WAQI station (US AQI → µg/m³ → §5) plus the CAMS model value for the area via Open-Meteo (~45 km, µg/m³ → §5). Pick a source with the 25 km / 3 h rule. Confidence comes from agreement and distance.
 4. Decision for the profile from the AQI number plus today's 3-hourly forecast (outdoor yes/limit/no, best window).
-5. Clip → quality gate → EfficientNet-B0 smoke/fire/clear classifier + Grad-CAM, and YOLO11n smoke/fire boxes + vehicle count. Causes only; they never change the AQI.
+5. Clip → quality gate → EfficientNet-B0 smoke/fire/clear classifier + CAM heatmap, and YOLO11n smoke/fire boxes + vehicle count. Causes only; they never change the AQI.
 6. Seasonal line.
 7. Bedrock/Strands advice in EN/HI (template fallback), plus Polly Hindi audio.
 8. Optional report-burning draft.
@@ -68,7 +68,7 @@ API response shape: `backend/contract.json` (`air.measured` can be null, e.g. Ra
 
 ### Current image models (Fri) — causes only, never AQI
 - **Image → AQI is an experiment only, not in the product.** It failed on unseen days and cities (seed-0 CNN 32% vs 47.5% baseline; frozen-embedding / handcrafted probes at baseline; India/Nepal leave-one-city-out inverted). Numbers: `ml/RESULTS.md`.
-- **EfficientNet-B0 smoke/fire/clear classifier** (pretrained, fine-tuned, 224 px) + **Grad-CAM** heatmap. Training data TBD (needs a licensed smoke/fire dataset; split by source video/scene, not frame).
+- **Smoke/fire classifier (trained Fri):** EfficientNet-B0, 2 sigmoid outputs (smoke, fire; "clear" = neither), whole frame squashed to 224×224, trained on **D-Fire** (CC0) with the dHash + AoF-sequence grouped split `ml/splits/dfire.json`. Code: `hazeml/train_smokefire.py`, `smokefire_data.py`, `export_onnx.py`. D-Fire test AP smoke 0.979 / fire 0.982 (thresholds from val: smoke 0.359, fire 0.667). **External Pyro-SDIS: smoke recall 13.4%, FPR 20.5%, AP 0.845 below the 0.868 base rate → doesn't transfer to distant wildfire plumes.** ONNX (features + logits) verified vs torch (max diff 2.1e-4). Heatmap = **CAM** in numpy (`hazeml/cam.py`) from the ONNX features + `head.npz`, not Grad-CAM (no gradients needed on Lambda). Details: `ml/RESULTS.md` §3.
 - **YOLO11n** (Ultralytics, **AGPL** — repo stays open source), fine-tuned for smoke/fire; vehicles from pretrained COCO classes. Output: smoke/fire boxes + vehicle count.
 - The quality gate (night, no sky, blur, indoor) runs before both models; their outputs feed `causes` in `backend/contract.json` and never change the AQI.
 - **LLM only phrases** numbers our pipeline computed. Never estimates AQI or invents numbers/health claims.
@@ -119,6 +119,8 @@ Sub-index = linear interpolation within the row; **AQI = max(sub-index PM2.5, su
   india-nepal/  "Air Pollution Image Dataset/Air Pollution Image Dataset/Combined_Dataset/"
                   All_img/ (use this only) + IND_and_Nep_AQI_Dataset.csv  (loader: ml/src/hazeml/india_nepal.py)
   pm25vision/   dropped — not used (safe to delete, 1.1 GB)
+  dfire_hf/     D-Fire (CC0) parquet from HF mirror badsaarow/d-fire, 21,527 imgs (ml/download_datasets.py); split: ml/splits/dfire.json
+  pyro_sdis/    Pyro-SDIS (Apache-2.0) parquet from pyronear/pyro-sdis, 12,378 imgs, smoke only, camera + date columns
   stations/     one folder per state, one CSV per station + stations.csv (8.4 GB)
   cpcb_2015_2020/  city_day, city_hour, station_day, station_hour, stations CSVs (Kaggle rohanrao/air-quality-data-in-india)
 ```
@@ -202,15 +204,17 @@ PWA fetches result ◄─ API Gateway ◄─ Lambda
 - **Sat:** quality gate + causes end-to-end; Grad-CAM; seasonal line; Bedrock/Strands advice (EN/HI) + Polly; PWA; deploy; ONNX; test with non-team users; cut anything not working by Sat night.
 - **Sun:** film demo outdoors; 3-min video (AWS visible); writeup (AI tools listed, citations incl. CAMS/Open-Meteo); blog; submit early.
 
-## 11. Status (Fri 9 Oct, night)
+## 11. Status (Fri 9 Oct → Sat 10 Oct)
 
-Done (Thu): repo and branches (`ml/aqi-labels` → PR #1, `ml/traqid-loader`), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
-Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine) with 57 mocked tests; CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
+Done (Thu): repo and branches (`ml/aqi-labels` → PR #1; `ml/traqid-loader` → PR #2, which also contains #1's commit — merge #1 first or close it), §5 function + tests (matches CPCB city_day on 74% of categories / 85% of bands; misses are almost all one category off, consistent with daily vs rolling averaging), TRAQID loader + split, CNN + probes (negative result), India/Nepal loader.
+Done (Fri): pivot docs; `ml/RESULTS.md`; §5 function moved to `shared/` (`cpcb_aqi`, used by ml + backend); `backend/contract.json`; `backend/src/air/` (WAQI, Open-Meteo/CAMS, combine); CAMS vs stations validation (CAMS ≈ 0.8× stations, misses ~2/3 of Very Poor/Severe days in Delhi/Patna).
 Air rules now: measured if station ≤ 25 km and < 3 h old, else modelled; **whenever `used == modelled` → CAMS PM ×1.25** (from the validation; PM2.5-based, PM10 assumed; helps Delhi/Patna, **hurts Hyderabad** — `ml/RESULTS.md` §2b); decision = worst slot over the profile's remaining hours today (school 07–17, worker 06–19, general 06–21), or tomorrow's hours after they end (`decision.for`); `no_window_today` / `no_window_tomorrow` if no "yes" slot. Details: `backend/src/air/decision_rules.md`.
+Done (Fri night): `forecast_tomorrow`; D-Fire + Pyro-SDIS downloaded and extracted (`$DATA_DIR/dfire_hf`, `$DATA_DIR/pyro_sdis`) — **D-Fire came from the Hugging Face mirror `badsaarow/d-fire`** (the official OneDrive links block scripted downloads; counts match the README); D-Fire split v2 (no consecutive-frame leaks ≤ 15; **the 10% group cap was hit 4 times**); smoke/fire model trained + ONNX + CAM: **D-Fire test AP smoke 0.979 / fire 0.982; Pyro-SDIS smoke recall 13.4%, so it doesn't transfer yet** (`ml/RESULTS.md` §3).
 Done (Fri night): **WAQI token set and live-tested** (Delhi returns a station; Ranchi has none → `NoStationError` + caveat "No official monitoring station near this location; using CAMS model estimate."; invalid key / HTTP errors / timeouts → "WAQI unavailable"; a station > 25 km also gets the no-station caveat when the answer is modelled). Backend tests: 66 passing. **AWS skeleton deployed** (§7.1), e2e passing.
-Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`.
 Done (Fri, late): advice from Bedrock Nova 2 Lite with validation + template fallback; Polly HI + EN audio; e2e passing with `advice.source = "bedrock"` (§7.1). Infra tests: 66 passing.
-Remaining: smoke/fire dataset choice + ONNX models in `causes.py`, seasonal line, PWA, own test clips, final names.
+Tests (main side, before this merge): backend 62, shared 50, ml 33; infra branch: see §7.1.
+Env notes: PyTorch is installed in the `ml/` uv project (cu128), not system-wide; WSL currently sees 7 GB RAM, not the 10 GB in `.wslconfig`.
+Remaining: **seasonal lookup script + JSON** (§6.3), quality gate, YOLO11n (vehicles + smoke/fire boxes), PWA, **own test clips (the smoke model's real test)**, final names, **merging PRs #1 then #2**.
 
 ## 12. Open items
 

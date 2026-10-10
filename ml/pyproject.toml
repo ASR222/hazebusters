@@ -10,7 +10,10 @@ requires-python = ">=3.12"
 dependencies = [
     "cpcb-aqi",
     "numpy>=2.5.3",
+    "onnx>=1.23.2",
+    "onnxruntime>=1.31.0",
     "pandas>=3.0.6",
+    "pyarrow>=26.0.0",
     "python-dotenv>=1.2.4",
     "scikit-learn>=1.9.1",
     "torch>=2.11.0",

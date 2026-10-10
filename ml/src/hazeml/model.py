@@ -8,13 +8,13 @@ from hazeml.aqi import BANDS
 ARCHS = ("efficientnet_b0", "mobilenet_v3_large")
 
 
-def build_model(arch: str = "efficientnet_b0", pretrained: bool = True) -> nn.Module:
+def build_model(arch: str = "efficientnet_b0", pretrained: bool = True, num_outputs: int = len(BANDS)) -> nn.Module:
     if arch == "efficientnet_b0":
         model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None)
-        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(BANDS))
+        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_outputs)
     elif arch == "mobilenet_v3_large":
         model = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.IMAGENET1K_V2 if pretrained else None)
-        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(BANDS))
+        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_outputs)
     else:
         raise ValueError(f"unknown arch {arch!r}; choose from {ARCHS}")
     return model
