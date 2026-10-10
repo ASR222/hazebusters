@@ -23,11 +23,16 @@
     const [h0, h1] = PROFILE_HOURS[r.profile] || [];
     const hours = h0 != null ? ` · ${PROFILES[r.profile]} hours ${hourText(h0)}–${hourText(h1)}` : "";
     let windowLine = `No good window ${day.toLowerCase()}`;
-    if (d.best_window) {
-      const end = parts(d.best_window.end);
+    if (d.outdoor === "yes" && h1 != null) {
+      // "yes" = every slot left in the hours is fine, so the first-slot best_window would undersell it.
+      windowLine = d.for === "tomorrow" ? `Fine all day, ${hourText(h0)}–${hourText(h1)}` : `Fine from now until ${hourText(h1)}`;
+    } else if (d.best_window) {
+      const start = parts(d.best_window.start), end = parts(d.best_window.end);
+      // The backend clips today's first slot to the current time (e.g. 11:17); show that as "now".
+      const from = d.for === "today" && start && start.min !== 0 ? "now" : clock(d.best_window.start);
       windowLine = end && end.h === h1 && end.min === 0
-        ? `Outdoors after ${clock(d.best_window.start)}`
-        : `Best window: ${clock(d.best_window.start)}–${clock(d.best_window.end)}`;
+        ? (from === "now" ? `Outdoors fine from now` : `Outdoors after ${from}`)
+        : `Best window: ${from}–${clock(d.best_window.end)}`;
     }
     return `
       <div class="card decision ${esc(d.outdoor)}">
