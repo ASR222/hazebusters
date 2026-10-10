@@ -515,3 +515,34 @@ def test_lookup_raises_with_nearest_for_ranchi(monkeypatch):
     with pytest.raises(waqi.NoStationError) as e:
         waqi.lookup(*RANCHI, "t")
     assert e.value.nearest["city"] == "Jamshedpur" and e.value.nearest["dist_km"] == 108.4
+
+
+def test_open_meteo_retried_once(monkeypatch, capsys):
+    calls = []
+
+    def flaky(url, params=None, timeout=10):
+        if "waqi" in url:
+            return NOPE
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("timed out")
+        return openmeteo_payload()
+    monkeypatch.setattr(http, "get_json", flaky)
+    out = combine.air_for(*RANCHI, token=None, now=NOW)
+    assert len(calls) == 2 and out["air"]["modelled"] is not None
+    assert not any("Open-Meteo unavailable" in c for c in out["caveats"])
+    assert '"open_meteo": "failed", "attempt": 1' in capsys.readouterr().out
+
+
+def test_open_meteo_gives_up_after_two(monkeypatch):
+    calls = []
+
+    def down(url, params=None, timeout=10):
+        if "waqi" in url:
+            return waqi_payload()
+        calls.append(1)
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(http, "get_json", down)
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert len(calls) == 2 and out["air"]["used"] == "measured"
+    assert "Open-Meteo unavailable (TimeoutError: timed out)." in out["caveats"]

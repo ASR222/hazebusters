@@ -17,12 +17,14 @@ Rules (CLAUDE.md §3; rule table with CPCB health statements in decision_rules.m
   scaled by CAMS_CORRECTION before the AQI, the decision and the forecast, and a caveat says so.
 """
 
+import json
 import math
 from datetime import datetime, timedelta
 
 from air import openmeteo, waqi
 
 MAX_STATION_KM = 25.0
+OPENMETEO_ATTEMPTS = 2
 MAX_STATION_AGE = timedelta(hours=3)
 
 # CAMS daily PM2.5 ran ~0.8x the ground stations: median CAMS/station ratio 0.78 (Delhi), 0.79 (Hyderabad),
@@ -224,11 +226,15 @@ def air_for(lat: float, lon: float, token: str | None, now: datetime | None = No
         waqi_note = "WAQI not queried (no WAQI_TOKEN)."
     scale = 1.0 if station_usable(measured, now) else CAMS_CORRECTION  # i.e. whenever `used` will be modelled
     modelled, forecast, notes = None, [], []
-    try:
-        hours = openmeteo.parse_hourly(openmeteo.fetch(lat, lon))
-        modelled, forecast = openmeteo.modelled_now(hours, now, scale), openmeteo.forecast_3h(hours, scale)
-    except Exception as e:
-        notes.append(f"Open-Meteo unavailable ({type(e).__name__}: {e}).")
+    for attempt in range(1, OPENMETEO_ATTEMPTS + 1):  # one retry: a single slow response (10 s timeout) seen live
+        try:
+            hours = openmeteo.parse_hourly(openmeteo.fetch(lat, lon))
+            modelled, forecast = openmeteo.modelled_now(hours, now, scale), openmeteo.forecast_3h(hours, scale)
+            break
+        except Exception as e:
+            print(json.dumps({"open_meteo": "failed", "attempt": attempt, "reason": f"{type(e).__name__}: {e}"}))
+            if attempt == OPENMETEO_ATTEMPTS:
+                notes.append(f"Open-Meteo unavailable ({type(e).__name__}: {e}).")
     out = combine(measured, modelled, forecast, now, profile,
                   corrected=scale != 1.0 and modelled is not None, waqi_note=waqi_note, nearest=nearest)
     out["caveats"] = list(dict.fromkeys(out["caveats"] + notes))
