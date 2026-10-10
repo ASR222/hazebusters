@@ -385,3 +385,38 @@ def test_forecast_tomorrow_split_by_date(monkeypatch):
 def test_forecast_tomorrow_empty_without_data(monkeypatch):
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=1))
     assert combine.air_for(*RANCHI, token=None, now=NOW)["forecast_tomorrow"] == []
+
+
+# --- time zones: everything in IST, even when `now` is UTC (Lambda) --------------------------------
+
+UTC_1230 = datetime(2026, 10, 9, 12, 30, tzinfo=timezone.utc)  # = 18:00 IST: after school hours in IST only
+
+
+def test_forecast_times_are_ist_and_decision_uses_ist(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=2))
+    out = combine.air_for(*RANCHI, token=None, now=UTC_1230, profile="school")
+    slots = out["forecast_today"] + out["forecast_tomorrow"]
+    assert len(slots) == 16 and all(s["time"].endswith("+05:30") for s in slots)
+    assert out["air"]["modelled"]["valid_at"].endswith("+05:30")
+    assert out["decision"]["for"] == "tomorrow"  # 18:00 IST is past 17:00; in UTC it would be 12:30 -> "today"
+    w = out["decision"]["best_window"]
+    assert w is None or (w["start"].startswith("2026-10-10T") and w["start"].endswith("+05:30"))
+
+
+def test_decision_without_forecast_still_uses_ist():
+    assert combine.decision(150, [], UTC_1230, "school")["for"] == "tomorrow"
+    assert combine.decision(150, [], datetime(2026, 10, 9, 5, 0, tzinfo=timezone.utc), "school")["for"] == "today"
+
+
+@pytest.mark.parametrize("offset", [0, None, 3600])
+def test_non_ist_open_meteo_payload_is_rejected(monkeypatch, offset):
+    payload = openmeteo_payload()
+    if offset is None:
+        del payload["utc_offset_seconds"]
+    else:
+        payload["utc_offset_seconds"] = offset
+    with pytest.raises(ValueError, match="expected 19800"):
+        openmeteo.parse_hourly(payload)
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: payload)
+    with pytest.raises(ValueError, match="no air data"):  # no token + rejected CAMS -> nothing to answer with
+        combine.air_for(*RANCHI, token=None, now=UTC_1230)

@@ -89,7 +89,8 @@ def decision(current_aqi: int, forecast: list[dict], now: datetime, profile: str
     """Contract `decision` for the profile's next outdoor hours (see module docstring).
 
     `forecast`: 3-hour slots for today and tomorrow (time = slot start, local)."""
-    tz = datetime.fromisoformat(forecast[0]["time"]).tzinfo if forecast else now.tzinfo
+    # Profile hours are Indian local time; without a forecast use IST, not `now`'s zone (UTC on Lambda).
+    tz = datetime.fromisoformat(forecast[0]["time"]).tzinfo if forecast else openmeteo.IST
     local = now.astimezone(tz)
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
     start, end = _profile_hours(midnight, profile)

@@ -15,6 +15,7 @@ URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 SOURCE = "CAMS via Open-Meteo"
 GRID_KM = 45
 TIMEZONE = "Asia/Kolkata"
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
 
 
 def fetch(lat: float, lon: float) -> dict:
@@ -25,8 +26,13 @@ def fetch(lat: float, lon: float) -> dict:
 
 
 def parse_hourly(payload: dict) -> list[dict]:
-    """[{time: aware datetime (local), pm25, pm10}] for today and tomorrow, None where CAMS has no value."""
-    tz = timezone(timedelta(seconds=payload.get("utc_offset_seconds", 0)))
+    """[{time: aware datetime (IST), pm25, pm10}] for today and tomorrow, None where CAMS has no value.
+
+    We ask for Asia/Kolkata; anything else (or a missing offset) would shift every slot, so it's an error."""
+    offset = payload.get("utc_offset_seconds")
+    if offset != IST.utcoffset(None).total_seconds():
+        raise ValueError(f"Open-Meteo returned utc_offset_seconds={offset!r}, expected 19800 (Asia/Kolkata)")
+    tz = IST
     h = payload["hourly"]
     return [
         {"time": datetime.fromisoformat(t).replace(tzinfo=tz), "pm25": pm25, "pm10": pm10}
