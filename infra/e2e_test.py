@@ -7,7 +7,8 @@ until done/failed (60 s) -> print the JSON and check it against backend/contract
 and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files) -> check smoke: clips
 named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url) and Bedrock advice carrying the smoke
 line; all others must
-come back without smoke. Exit 1 on any failure.
+come back without smoke -> vehicle_count must be an int (the YOLO model ran); clips named with --expect-vehicles
+must have at least 1. Exit 1 on any failure.
 """
 
 import argparse
@@ -95,6 +96,16 @@ def check_audio(got: dict, clip: Path, save_dir: Path | None) -> list[str]:
     return errs
 
 
+def check_vehicles(got: dict, clip: Path, expect: bool) -> list[str]:
+    n = got["result"]["causes"]["vehicle_count"]
+    print(f"[{clip.name}] vehicle_count {n}")
+    if not isinstance(n, int):
+        return [f"vehicle_count = {n!r} (vehicle model did not run)"]
+    if expect and n < 1:
+        return ["expected vehicles, got 0"]
+    return []
+
+
 def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> list[str]:
     c = got["result"]["causes"]
     print(f"[{clip.name}] smoke {c['smoke']}, fire {c['fire']}, gradcam_key {c['gradcam_key']}")
@@ -120,7 +131,8 @@ def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> l
     return errs
 
 
-def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False, place: str = "Ranchi") -> bool:
+def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool = False, place: str = "Ranchi",
+        expect_vehicles: bool = False) -> bool:
     ctype = TYPES[clip.suffix]
     t0 = time.monotonic()
     status, body = request("POST", f"{api}/jobs", json.dumps(
@@ -151,7 +163,8 @@ def run(api: str, clip: Path, save_dir: Path | None = None, expect_smoke: bool =
     if got["status"] != "done":
         print(f"[{clip.name}] FAILED: {got['error']}")
         return False
-    errs = check(got["result"]) + check_audio(got, clip, save_dir) + check_smoke(got, clip, expect_smoke, save_dir)
+    errs = check(got["result"]) + check_audio(got, clip, save_dir) + check_smoke(got, clip, expect_smoke, save_dir) \
+        + check_vehicles(got, clip, expect_vehicles)
     print(f"[{clip.name}] checks: " + ("OK" if not errs else "; ".join(errs)))
     return not errs
 
@@ -163,11 +176,14 @@ def main() -> None:
     p.add_argument("--stack", default="hazebusters")
     p.add_argument("--save-audio", type=Path, help="directory to save the downloaded mp3s and overlays")
     p.add_argument("--place", choices=list(PLACES), default="Ranchi", help="location sent with the job")
+    p.add_argument("--expect-vehicles", action="append", default=[], metavar="CLIP_NAME",
+                   help="file name of a clip that must come back with vehicle_count >= 1 (repeatable)")
     p.add_argument("--expect-smoke", action="append", default=[], metavar="CLIP_NAME",
                    help="file name of a clip that must come back with smoke (repeatable)")
     args = p.parse_args()
     api = (args.api or api_url(args.stack)).rstrip("/")
-    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke, args.place) for clip in args.clips]
+    results = [run(api, clip, args.save_audio, clip.name in args.expect_smoke, args.place, clip.name in args.expect_vehicles)
+               for clip in args.clips]
     sys.exit(0 if all(results) else 1)
 
 

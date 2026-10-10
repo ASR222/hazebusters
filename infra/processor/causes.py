@@ -7,7 +7,11 @@ Outputs: final conv features (CAM) + logits for (smoke, fire); sigmoid -> probab
 
 Per clip: prob = max over frames; present = >= 2 frames over the threshold (>= 1 if fewer than 3 frames).
 If something is present, a CAM overlay of the best frame goes to s3 overlays/{job_id}.jpg (never uploads/).
-Causes never change the AQI. Boxes and vehicle count wait for YOLO (boxes = [], vehicle_count = null).
+Vehicle count: pretrained YOLO11n (COCO, AGPL-3.0) ONNX from ml/runs/yolo (yolo11n.onnx, copied to models/),
+numpy pre/post-processing vendored in vehicles.py (letterbox 640, conf 0.35, NMS 0.5, car/motorcycle/bus/truck);
+per clip = median of the per-frame counts. Independent of the smoke model: if YOLO fails, vehicle_count stays null
+with caveat VEHICLES_UNAVAILABLE. boxes stay [] (they are for smoke/fire boxes, not done).
+Causes never change the AQI. Both ONNX sessions load lazily on the first invocation.
 """
 
 import io
@@ -20,6 +24,7 @@ import numpy as np
 from PIL import Image
 
 import cam
+import vehicles
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 LABELS = ("smoke", "fire")
@@ -29,10 +34,14 @@ MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 OVERLAY_MAX_W = 640
 UNAVAILABLE = "Smoke check unavailable for this clip"
+VEHICLES_UNAVAILABLE = "Vehicle count unavailable for this clip"
+YOLO_FILE = "yolo11n.onnx"
 
 _session = None
 _head = None
 _load_error: Exception | None = None
+_yolo = None
+_yolo_error: Exception | None = None
 
 
 def load(model_dir: Path | None = None) -> None:
@@ -57,6 +66,44 @@ def load(model_dir: Path | None = None) -> None:
     except Exception as e:
         _session, _head, _load_error = None, None, e
         print(json.dumps({"causes": "model_load_failed", "reason": f"{type(e).__name__}: {e}"}))
+
+
+def load_yolo(model_dir: Path | None = None) -> None:
+    """Load the YOLO11n session into the module cache (lazily, like load()); a failure is retried next time."""
+    global _yolo, _yolo_error
+    t0 = time.monotonic()
+    try:
+        import onnxruntime as ort
+
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = os.cpu_count() or 1
+        _yolo = ort.InferenceSession(str((model_dir or MODEL_DIR) / YOLO_FILE), opts, providers=["CPUExecutionProvider"])
+        _yolo_error = None
+        print(json.dumps({"vehicles": "model_loaded", "ms": round((time.monotonic() - t0) * 1000)}))
+    except Exception as e:
+        _yolo, _yolo_error = None, e
+        print(json.dumps({"vehicles": "model_load_failed", "reason": f"{type(e).__name__}: {e}"}))
+
+
+def count_vehicles(rgb_frames: list[np.ndarray]) -> int | None:
+    """Per-clip vehicle count (median of per-frame counts), or None if the model can't run. Never raises."""
+    t0 = time.monotonic()
+    try:
+        if _yolo is None:
+            load_yolo()
+        if _yolo is None:
+            raise RuntimeError(f"model not loaded: {_yolo_error!r}")
+        run = lambda x: _yolo.run(["output0"], {"images": x})[0]  # noqa: E731
+        per_frame = [vehicles.count_by_class(vehicles.detect(run, f)) for f in rgb_frames]
+        totals = [sum(c.values()) for c in per_frame]
+        count = vehicles.clip_vehicle_count(totals)
+        by_class = {k: vehicles.clip_vehicle_count([c[k] for c in per_frame]) for k in vehicles.VEHICLE_CLASSES.values()}
+        print(json.dumps({"vehicles": "ok", "count": count, "per_frame": totals, "median_by_class": by_class,
+                          "model_ms": round((time.monotonic() - t0) * 1000)}))
+        return count
+    except Exception as e:
+        print(json.dumps({"vehicles": "failed", "reason": f"{type(e).__name__}: {e}"}))
+        return None
 
 
 def preprocess(rgb_frames: list[np.ndarray]) -> np.ndarray:
@@ -111,6 +158,17 @@ def overlay_jpeg(rgb: np.ndarray, features: np.ndarray, label: int) -> bytes:
 
 
 def detect(bgr_frames: list[np.ndarray], job_id: str, s3, bucket: str) -> tuple[dict, list[str], bool]:
+    """-> (contract `causes`, caveats, smoke_model_ran). Never raises. Smoke/fire and vehicles fail independently:
+    smoke failure -> stub smoke/fire + UNAVAILABLE; vehicle failure -> vehicle_count null + VEHICLES_UNAVAILABLE."""
+    out, caveats, ran = _detect_smoke(bgr_frames, job_id, s3, bucket)
+    rgb = [np.ascontiguousarray(f[..., ::-1]) for f in bgr_frames]  # OpenCV decodes BGR
+    out["vehicle_count"] = count_vehicles(rgb)
+    if out["vehicle_count"] is None:
+        caveats = caveats + [VEHICLES_UNAVAILABLE]
+    return out, caveats, ran
+
+
+def _detect_smoke(bgr_frames: list[np.ndarray], job_id: str, s3, bucket: str) -> tuple[dict, list[str], bool]:
     """-> (contract `causes`, caveats, model_ran). Never raises: on model failure, stub causes + UNAVAILABLE caveat;
     an overlay failure only leaves gradcam_key null."""
     t0 = time.monotonic()
