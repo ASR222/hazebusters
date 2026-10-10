@@ -10,7 +10,7 @@ The result screen renders `result` (shape: `backend/contract.json`) plus `audio_
 | `api.js` | create job, XHR upload with progress, polling |
 | `app.js` | input / progress / result screens, geolocation + city fallback, retry, `?mock=1` |
 | `result.js` | decision, AQI + source, forecast strip, causes, EN/HI advice + audio |
-| `sw.js`, `manifest.webmanifest` | installable PWA; network-first shell cache, never caches the API |
+| `sw.js`, `manifest.webmanifest` | installable PWA; network-first for own files (cache = offline fallback), never intercepts cross-origin (API, S3) |
 
 ## Run locally
 
@@ -23,7 +23,7 @@ Open http://localhost:8000 (geolocation works on `localhost` and HTTPS only; on 
 
 ## Deploy (Amplify Hosting, manual)
 
-1. Set `API_BASE` in `config.js` to the `ApiUrl` stack output.
+1. Set `API_BASE` in `config.js` to the `ApiUrl` stack output, and **bump `CACHE_VERSION` in `sw.js`** (every deploy).
 2. Zip the **contents** of `frontend/` (`index.html` must sit at the zip root), without `mock/`:
    ```bash
    cd frontend && python3 -m zipfile -c ../frontend.zip index.html styles.css config.js format.js api.js result.js app.js sw.js manifest.webmanifest icon.svg

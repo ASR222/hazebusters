@@ -1,5 +1,8 @@
-// Network-first for the app shell, cache as offline fallback. Never touches the API or S3 (other origins).
-const CACHE = "hazebusters-v1";
+// Network-first for the page's own files; the cache is only an offline fallback.
+// Cross-origin requests (API, S3 PUT, presigned audio/CAM) are never intercepted.
+// Bump CACHE_VERSION on every deploy so old caches are dropped.
+const CACHE_VERSION = "v1";
+const CACHE = `hazebusters-${CACHE_VERSION}`;
 const SHELL = ["./", "index.html", "styles.css", "config.js", "format.js", "api.js", "result.js", "app.js",
   "manifest.webmanifest", "icon.svg"];
 
