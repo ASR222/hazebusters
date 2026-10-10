@@ -10,3 +10,6 @@ runs/
 *.pth
 *.keras
 *.zip
+
+# Real API result used by ?mock=1 (local only)
+frontend/mock/
