@@ -10,3 +10,8 @@ runs/
 *.pth
 *.keras
 *.zip
+samconfig.toml
+infra/processor/models/
+
+# Real API result used by ?mock=1 (local only)
+frontend/mock/
