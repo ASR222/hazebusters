@@ -24,7 +24,7 @@
     "smoke": {"present": false, "prob": 0},
     "fire": {"present": false, "prob": 0},
     "boxes": [{"cls": "smoke", "conf": 0, "frame": 0, "xywh": [0, 0, 0, 0]}],
-    "vehicle_count": 0,
+    "vehicle_count": "int|null (null until YOLO)",
     "gradcam_key": null
   },
   "advice": {"en": "...", "hi": "...", "source": "bedrock|template"},

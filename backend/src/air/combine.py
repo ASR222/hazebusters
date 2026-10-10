@@ -29,6 +29,8 @@ MAX_STATION_AGE = timedelta(hours=3)
 # 0.81 (Patna), 2023-24 (ml/runs/cams_validation/summary.json, from ml/validate_cams.py; ml/RESULTS.md §2).
 CAMS_CORRECTION = 1.25
 
+NO_STATION_NOTE = "No official monitoring station near this location; using CAMS model estimate."
+
 # Hours (local) in which a profile would go outdoors; best_window is clipped to these.
 PROFILE_WINDOWS = {"school": (7, 17), "worker": (6, 19), "general": (6, 21)}
 
@@ -87,7 +89,8 @@ def decision(current_aqi: int, forecast: list[dict], now: datetime, profile: str
     """Contract `decision` for the profile's next outdoor hours (see module docstring).
 
     `forecast`: 3-hour slots for today and tomorrow (time = slot start, local)."""
-    tz = datetime.fromisoformat(forecast[0]["time"]).tzinfo if forecast else now.tzinfo
+    # Profile hours are Indian local time; without a forecast use IST, not `now`'s zone (UTC on Lambda).
+    tz = datetime.fromisoformat(forecast[0]["time"]).tzinfo if forecast else openmeteo.IST
     local = now.astimezone(tz)
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
     start, end = _profile_hours(midnight, profile)
@@ -146,6 +149,8 @@ def combine(measured: dict | None, modelled: dict | None, forecast: list[dict], 
     else:
         caveats.append("WAQI US AQI sub-indices converted back to µg/m³ (US EPA 2012 breakpoints).")
         if measured["dist_km"] > MAX_STATION_KM:
+            if used == "modelled":
+                caveats.append(NO_STATION_NOTE)
             caveats.append(f"Nearest station is {measured['dist_km']} km away.")
         if not _fresh(measured, now):
             caveats.append(f"Nearest station last updated {measured['updated_at']}.")
@@ -169,7 +174,9 @@ def air_for(lat: float, lon: float, token: str | None, now: datetime | None = No
             measured = waqi.parse(waqi.fetch(lat, lon, token), lat, lon)
             if measured is None:
                 waqi_note = "Nearest WAQI station reports no PM2.5 or PM10."
-        except Exception as e:  # network / API error: fall back to CAMS
+        except waqi.NoStationError:
+            waqi_note = NO_STATION_NOTE
+        except Exception as e:  # invalid key, HTTP error, timeout: a real "unavailable"
             waqi_note = f"WAQI unavailable ({type(e).__name__}: {e})."
     else:
         waqi_note = "WAQI not queried (no WAQI_TOKEN)."

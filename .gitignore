@@ -10,3 +10,5 @@ runs/
 *.pth
 *.keras
 *.zip
+samconfig.toml
+infra/processor/models/

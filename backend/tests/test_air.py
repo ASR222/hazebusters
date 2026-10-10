@@ -67,8 +67,17 @@ def test_waqi_parse_handles_missing_and_offline_values():
 
 
 def test_waqi_error_status_raises():
-    with pytest.raises(waqi.WaqiError, match="Invalid key"):
+    with pytest.raises(waqi.InvalidKeyError, match="Invalid key"):
         waqi.parse({"status": "error", "data": "Invalid key"}, *RANCHI)
+    with pytest.raises(waqi.WaqiError, match="Over quota"):
+        waqi.parse({"status": "error", "data": "Over quota"}, *RANCHI)
+
+
+@pytest.mark.parametrize("payload", [{"status": "nope", "data": "can not connect"},
+                                     {"status": "error", "data": "Unknown station"}])
+def test_waqi_no_station_statuses(payload):
+    with pytest.raises(waqi.NoStationError):
+        waqi.parse(payload, *RANCHI)
 
 
 # --- Open-Meteo -----------------------------------------------------------------------------
@@ -317,6 +326,53 @@ def test_caveats_have_no_duplicates_and_one_waqi_reason(monkeypatch):
     assert [c for c in out["caveats"] if "WAQI" in c] == ["WAQI not queried (no WAQI_TOKEN)."]
 
 
+# --- WAQI failure modes: no station vs unavailable -------------------------------------------------
+
+
+def _waqi_returns(monkeypatch, waqi_result):
+    def fake_get_json(url, params=None, timeout=10):
+        if "waqi" not in url:
+            return openmeteo_payload()
+        if isinstance(waqi_result, Exception):
+            raise waqi_result
+        return waqi_result
+    monkeypatch.setattr(http, "get_json", fake_get_json)
+
+
+def test_no_station_caveat(monkeypatch):
+    _waqi_returns(monkeypatch, {"status": "nope", "data": "can not connect"})  # live Ranchi response
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    assert out["air"]["confidence"] == "low"
+    assert out["air"]["modelled"]["pm25"] == pytest.approx(30 * combine.CAMS_CORRECTION)
+    assert combine.NO_STATION_NOTE in out["caveats"]
+    assert not any("WAQI unavailable" in c for c in out["caveats"])
+
+
+def test_far_station_gets_no_station_caveat(monkeypatch):
+    _waqi_returns(monkeypatch, waqi_payload(geo=(22.80, 86.20)))  # ~107 km
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["measured"] is not None and out["air"]["used"] == "modelled"
+    assert combine.NO_STATION_NOTE in out["caveats"]
+    assert any("km away" in c for c in out["caveats"])
+
+
+def test_invalid_key_is_unavailable(monkeypatch):
+    _waqi_returns(monkeypatch, {"status": "error", "data": "Invalid key"})
+    out = combine.air_for(*RANCHI, token="bad", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    assert "WAQI unavailable (InvalidKeyError: WAQI error: Invalid key)." in out["caveats"]
+    assert combine.NO_STATION_NOTE not in out["caveats"]
+
+
+def test_timeout_is_unavailable(monkeypatch):
+    _waqi_returns(monkeypatch, TimeoutError("timed out"))
+    out = combine.air_for(*RANCHI, token="t", now=NOW)
+    assert out["air"]["measured"] is None and out["air"]["used"] == "modelled"
+    assert "WAQI unavailable (TimeoutError: timed out)." in out["caveats"]
+    assert combine.NO_STATION_NOTE not in out["caveats"]
+
+
 def test_forecast_tomorrow_split_by_date(monkeypatch):
     contract = json.loads((Path(__file__).resolve().parents[1] / "contract.json").read_text())
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=2))
@@ -329,3 +385,38 @@ def test_forecast_tomorrow_split_by_date(monkeypatch):
 def test_forecast_tomorrow_empty_without_data(monkeypatch):
     monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=1))
     assert combine.air_for(*RANCHI, token=None, now=NOW)["forecast_tomorrow"] == []
+
+
+# --- time zones: everything in IST, even when `now` is UTC (Lambda) --------------------------------
+
+UTC_1230 = datetime(2026, 10, 9, 12, 30, tzinfo=timezone.utc)  # = 18:00 IST: after school hours in IST only
+
+
+def test_forecast_times_are_ist_and_decision_uses_ist(monkeypatch):
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: openmeteo_payload(days=2))
+    out = combine.air_for(*RANCHI, token=None, now=UTC_1230, profile="school")
+    slots = out["forecast_today"] + out["forecast_tomorrow"]
+    assert len(slots) == 16 and all(s["time"].endswith("+05:30") for s in slots)
+    assert out["air"]["modelled"]["valid_at"].endswith("+05:30")
+    assert out["decision"]["for"] == "tomorrow"  # 18:00 IST is past 17:00; in UTC it would be 12:30 -> "today"
+    w = out["decision"]["best_window"]
+    assert w is None or (w["start"].startswith("2026-10-10T") and w["start"].endswith("+05:30"))
+
+
+def test_decision_without_forecast_still_uses_ist():
+    assert combine.decision(150, [], UTC_1230, "school")["for"] == "tomorrow"
+    assert combine.decision(150, [], datetime(2026, 10, 9, 5, 0, tzinfo=timezone.utc), "school")["for"] == "today"
+
+
+@pytest.mark.parametrize("offset", [0, None, 3600])
+def test_non_ist_open_meteo_payload_is_rejected(monkeypatch, offset):
+    payload = openmeteo_payload()
+    if offset is None:
+        del payload["utc_offset_seconds"]
+    else:
+        payload["utc_offset_seconds"] = offset
+    with pytest.raises(ValueError, match="expected 19800"):
+        openmeteo.parse_hourly(payload)
+    monkeypatch.setattr(http, "get_json", lambda url, params=None, timeout=10: payload)
+    with pytest.raises(ValueError, match="no air data"):  # no token + rejected CAMS -> nothing to answer with
+        combine.air_for(*RANCHI, token=None, now=UTC_1230)
