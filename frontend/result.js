@@ -85,7 +85,9 @@
           ${otherLine(air)}
           ${r.seasonal_line ? `<p>${esc(r.seasonal_line)}</p>` : ""}
         </div>
-        ${caveats.length ? `<ul class="caveats">${caveats.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}
+        ${caveats.length ? `<p class="caveat">${esc(caveats[0])}</p>` : ""}
+        ${caveats.length > 1 ? `<details class="caveats"><summary>Details (${caveats.length - 1})</summary>
+          <ul>${caveats.slice(1).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></details>` : ""}
       </div>`;
   }
 
@@ -121,9 +123,11 @@
 
   function causeRow(name, c) {
     if (!c) return "";
-    const pct = c.prob != null ? ` (${Math.round(c.prob * 100)}%)` : "";
+    // Classifier output, not a confirmed detection: >= 0.6 "Likely", present below that "Possible".
+    const [label, cls] = c.present && c.prob >= 0.6 ? ["Likely", "likely"] : c.present ? ["Possible", "possible"] : ["Not seen", "muted"];
+    const score = c.prob != null ? ` (model score ${Math.round(c.prob * 100)}%)` : "";
     return `<div class="cause"><span>${name}</span>
-      <span class="${c.present ? "yes" : "muted"}">${c.present ? "Detected" : "Not detected"}${pct}</span></div>`;
+      <span class="${cls}">${label}${score}</span></div>`;
   }
 
   function causesCard(r, camUrl) {
@@ -173,9 +177,12 @@
       </div>`;
   }
 
-  function header(r) {
+  // `picked`: {city} from the dropdown or {gps: true} (app.js); absent for mock results.
+  function header(r, picked) {
     const loc = r.location || {};
-    const place = loc.place || (loc.lat != null ? `${(+loc.lat).toFixed(3)}, ${(+loc.lon).toFixed(3)}` : "");
+    const coords = loc.lat != null ? `${(+loc.lat).toFixed(3)}, ${(+loc.lon).toFixed(3)}` : "";
+    const place = loc.place || (picked && picked.city)
+      || (picked && picked.gps ? `Your location${coords ? ` (${coords})` : ""}` : coords);
     return `<p class="muted">${esc(place)}${place ? " · " : ""}${esc(PROFILES[r.profile] || "")}</p>`;
   }
 
@@ -193,9 +200,9 @@
   }
 
   // `job` = GET /jobs/{id} body {result, audio_urls, gradcam_url}, or a bare contract result (mock).
-  function render(root, job) {
+  function render(root, job, picked) {
     const r = job.result || job;
-    root.innerHTML = header(r) + decisionCard(r) + aqiCard(r) + forecastCard(r)
+    root.innerHTML = header(r, picked) + decisionCard(r) + aqiCard(r) + forecastCard(r)
       + causesCard(r, job.gradcam_url) + adviceCard(r, job.audio_urls);
     bindTabs(root);
   }
