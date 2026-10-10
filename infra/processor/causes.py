@@ -11,6 +11,8 @@ Vehicle count: pretrained YOLO11n (COCO, AGPL-3.0) ONNX from ml/runs/yolo (yolo1
 numpy pre/post-processing vendored in vehicles.py (letterbox 640, conf 0.35, NMS 0.5, car/motorcycle/bus/truck);
 per clip = median of the per-frame counts. Independent of the smoke model: if YOLO fails, vehicle_count stays null
 with caveat VEHICLES_UNAVAILABLE. boxes stay [] (they are for smoke/fire boxes, not done).
+Quality gate first (analyse(); quality.py): frames that are dark / blurred / without sky are dropped; with fewer
+than quality.MIN_PASS good frames the models are skipped and the result says so.
 Causes never change the AQI. Both ONNX sessions load lazily on the first invocation.
 """
 
@@ -24,6 +26,7 @@ import numpy as np
 from PIL import Image
 
 import cam
+import quality
 import vehicles
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
@@ -35,6 +38,8 @@ STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 OVERLAY_MAX_W = 640
 UNAVAILABLE = "Smoke check unavailable for this clip"
 VEHICLES_UNAVAILABLE = "Vehicle count unavailable for this clip"
+QUALITY_SKIPPED = ("Couldn't check what's in this clip (indoor / too dark / blurry). "
+                   "Point the camera at the sky or street outdoors.")
 YOLO_FILE = "yolo11n.onnx"
 
 _session = None
@@ -155,6 +160,23 @@ def overlay_jpeg(rgb: np.ndarray, features: np.ndarray, label: int) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
+
+
+def analyse(bgr_frames: list[np.ndarray], job_id: str, s3, bucket: str) -> tuple[dict, list[str], bool]:
+    """Quality gate, then the cause models on the frames that pass. -> (contract `causes`, caveats, smoke_model_ran).
+
+    Fewer than quality.MIN_PASS good frames -> no models run: smoke/fire not present, vehicle_count null,
+    QUALITY_SKIPPED caveat, and model_ran False (so causes never reach Bedrock)."""
+    kept, why, log = quality.gate(bgr_frames)
+    print(json.dumps({"quality": "ok" if len(kept) >= quality.MIN_PASS else "skipped", "frames": len(bgr_frames),
+                      "passed": len(kept), "reasons": why,
+                      "per_frame": [{k: f[k] for k in ("luma", "sharpness", "sky", "reject")} for f in log]}))
+    if len(kept) >= quality.MIN_PASS:
+        out, caveats, ran = detect(kept, job_id, s3, bucket)
+    else:
+        out, caveats, ran = stub(len(kept)), [QUALITY_SKIPPED], False
+    out.update(frames_used=len(kept), frames_rejected=len(bgr_frames) - len(kept), reject_reasons=why)
+    return out, caveats, ran
 
 
 def detect(bgr_frames: list[np.ndarray], job_id: str, s3, bucket: str) -> tuple[dict, list[str], bool]:

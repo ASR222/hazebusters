@@ -57,7 +57,7 @@ def process(bucket: str, key: str, job_id: str) -> dict:
         clip.unlink(missing_ok=True)
 
     air = air_for(lat, lon, os.environ.get("WAQI_TOKEN") or None, profile=profile)
-    found, cause_caveats, model_ran = causes.detect(sampled, job_id, s3, BUCKET)
+    found, cause_caveats, model_ran = causes.analyse(sampled, job_id, s3, BUCKET)
     text, sections = advice.build(air, profile, found, model_ran)
     spoken, audio_caveats = audio.synthesize(sections, job_id)
     return {
