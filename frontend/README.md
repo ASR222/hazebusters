@@ -24,9 +24,9 @@ Open http://localhost:8000 (geolocation works on `localhost` and HTTPS only; on 
 ## Deploy (Amplify Hosting, manual)
 
 1. Set `API_BASE` in `config.js` to the `ApiUrl` stack output, and **bump `CACHE_VERSION` in `sw.js`** (every deploy).
-2. Zip the **contents** of `frontend/` (`index.html` must sit at the zip root), without `mock/`:
+2. Zip the **contents** of `frontend/` (`index.html` must sit at the zip root), without `mock/`. Pass `icons` and `bg` as folders: listing their files individually makes `zipfile` drop the folder paths.
    ```bash
-   cd frontend && python3 -m zipfile -c ../frontend.zip index.html styles.css config.js format.js api.js result.js app.js sw.js manifest.webmanifest icons/leaf-32.png icons/leaf-192.png icons/leaf-512.png bg/bg.webp bg/bg-portrait.webp
+   cd frontend && python3 -m zipfile -c ../frontend.zip index.html styles.css config.js format.js api.js result.js app.js sw.js manifest.webmanifest icons bg
    ```
 3. AWS console → Amplify (region ap-south-1) → **Create new app** → **Deploy without Git** → app name `hazebusters`, branch `main` → drag `frontend.zip` → **Save and deploy**.
 4. Open the `https://main.<id>.amplifyapp.com` URL. Redeploy: rebuild the zip → app → branch `main` → **Deploy updates** → drop the new zip.
