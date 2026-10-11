@@ -31,7 +31,9 @@ import vehicles
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 LABELS = ("smoke", "fire")
-THRESHOLDS = {"smoke": 0.359, "fire": 0.667}  # max F1 on val (ml run report.md)
+# fire: max F1 on val (ml run report.md). smoke: raised from the val max-F1 0.359 to 0.600 (11 Oct) to cut false
+# alarms on hazy/dashcam footage before the demo; the advice line is hedged ("possible ... (experimental)").
+THRESHOLDS = {"smoke": 0.600, "fire": 0.667}
 SIZE = (224, 224)
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)

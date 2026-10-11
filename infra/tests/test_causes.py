@@ -106,12 +106,15 @@ def test_aggregate_needs_two_frames_over_threshold():
     probs = np.array([[0.9, 0.1]] + [[0.1, 0.1]] * 9)  # one smoky frame of ten
     agg = causes.aggregate(probs)
     assert agg["smoke"] == {"present": False, "prob": 0.9, "mean": 0.18, "count": 1}
-    probs[1, 0] = 0.4  # second frame just over the 0.359 threshold
+    probs[1, 0] = 0.59  # just under the 0.600 smoke threshold
+    assert causes.aggregate(probs)["smoke"]["present"] is False
+    probs[1, 0] = 0.6  # at the threshold -> second frame counts
     assert causes.aggregate(probs)["smoke"]["present"] is True
 
 
 def test_aggregate_one_frame_enough_for_short_clips():
-    assert causes.aggregate(np.array([[0.5, 0.1], [0.1, 0.1]]))["smoke"]["present"] is True
+    assert causes.aggregate(np.array([[0.65, 0.1], [0.1, 0.1]]))["smoke"]["present"] is True
+    assert causes.aggregate(np.array([[0.5, 0.1], [0.1, 0.1]]))["smoke"]["present"] is False  # was enough at 0.359
 
 
 def test_aggregate_fire_threshold():
@@ -145,7 +148,7 @@ def test_detect_bgr_to_rgb(model):
 
 def test_detect_smoke_writes_overlay(model):
     s3 = FakeS3()
-    model([[logit(0.2), 0.0], [logit(0.8), 0.0], [logit(0.5), 0.0]])
+    model([[logit(0.2), 0.0], [logit(0.8), 0.0], [logit(0.7), 0.0]])
     out, cav, ran = causes.detect(frames(3, 720, 1280), "job1", s3, "b")
     assert out["smoke"] == {"present": True, "prob": 0.8} and out["gradcam_key"] == "overlays/job1.jpg"
     (put,) = s3.puts
@@ -241,3 +244,7 @@ def test_vendored_vehicles_matches_ml():
         pytest.skip("ml/ not in this checkout")
     ours = (causes.MODEL_DIR.parent / "vehicles.py").read_text().split("\n", 3)[3]
     assert ours == ml.read_text().removeprefix('"""')  # identical apart from our 3-line provenance header
+
+
+def test_thresholds():
+    assert causes.THRESHOLDS == {"smoke": 0.600, "fire": 0.667}

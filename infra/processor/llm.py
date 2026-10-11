@@ -66,9 +66,6 @@ CAUSE_WORDS = {
     "smoke": (re.compile(r"\bsmok", re.I), re.compile(f"(?<![{_DEV}])(धुआँ|धुआं|धुआ|धुएँ|धुएं|धुंआ|धुँआ)")),
     "fire": (re.compile(r"\b(fires?|flames?|blaze)\b", re.I), re.compile(f"(?<![{_DEV}])(आग|लपट)(?![{_DEV}])")),
 }
-_DEFINITE_EN = re.compile(r"\b(detect|confirm|spotted|seen)", re.I)
-_DEFINITE_HI = re.compile(r"पाया गया|पाई गई|पता चला|देखा गया|देखी गई|पुष्टि")
-_POSSIBLE_EN = re.compile(r"\b(possibl|may be|might)", re.I)
 
 _client = None
 
@@ -107,21 +104,11 @@ def sentences(text: str) -> list[str]:
     return [x.strip().replace("<dot>", ".") for x in _SENTENCE.findall(text) if x.strip(" .?!।")]
 
 
-def check_causes(texts: dict, causes: dict) -> None:
-    """Smoke/fire only when present; "possible" (never definite) when certainty is "possible". (The cause sentence
-    itself is appended in code by advice.build, so the model doesn't have to mention it.)"""
+def check_causes(texts: dict) -> None:
+    """The model must not mention smoke or fire at all: the hedged cause line is appended in code by advice.build."""
     for label, (en_re, hi_re) in CAUSE_WORDS.items():
-        info = causes.get(label) if causes.get("available") else None
-        mentioned = {"en": bool(en_re.search(texts["en"])), "hi": bool(hi_re.search(texts["hi"]))}
-        if not (info and info.get("present")):
-            if any(mentioned.values()):
-                raise AdviceRejected(f"mentions {label} but it is not present")
-            continue
-        if info.get("certainty") == "possible":
-            if mentioned["en"] and (_DEFINITE_EN.search(texts["en"]) or not _POSSIBLE_EN.search(texts["en"])):
-                raise AdviceRejected(f"en states possible {label} as definite")
-            if mentioned["hi"] and _DEFINITE_HI.search(texts["hi"]):
-                raise AdviceRejected(f"hi states possible {label} as definite")
+        if en_re.search(texts["en"]) or hi_re.search(texts["hi"]):
+            raise AdviceRejected(f"mentions {label} (causes come only from the app's own sentence)")
 
 
 def validate(out: dict, facts: dict, max_sentences: int = MAX_SENTENCES) -> dict:
@@ -142,7 +129,7 @@ def validate(out: dict, facts: dict, max_sentences: int = MAX_SENTENCES) -> dict
             raise AdviceRejected(f"{lang} has {n} sentences (> {max_sentences})")
     if bad := [x for x in sentences(texts["hi"]) if _HEALTH_HI.search(x) and _CERTAIN_HI.search(x)]:
         raise AdviceRejected(f"hi states a health effect as certain: {bad[0]!r}")
-    check_causes(texts, facts.get("causes") or {})
+    check_causes(texts)
     if not _DEVANAGARI.search(texts["hi"]):
         raise AdviceRejected("hi has no Devanagari")
     aqi = str(facts["aqi"])
