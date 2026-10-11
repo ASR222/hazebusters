@@ -342,6 +342,6 @@ See you at the next one.
 - **AWS:** Amazon S3, AWS Lambda (container image via Amazon ECR), Amazon API Gateway (HTTP API), Amazon DynamoDB, AWS Amplify Hosting, AWS SAM / AWS CloudFormation and Amazon CloudWatch, all in ap-south-1 (Mumbai).
 - **AWS AI models:** Amazon Nova 2 Lite on Amazon Bedrock (advice text in English and Hindi, via the Converse API) and Amazon Polly neural text-to-speech (Hindi voice "Kajal", plus English).
 - **Event:** WeMakeDevs × AWS Environmental Hacks (Bharat Builds Tour), thanks to the organisers and mentors.
-- **AI tools used:** Claude Code and Claude.
+- **AI tools used:** Antigravity and Claude.
 
 *Built by Abhay for WeMakeDevs × AWS Environmental Hacks 2026, Air track.*
