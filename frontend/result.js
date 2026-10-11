@@ -159,8 +159,8 @@
 
   function causeRow(name, c) {
     if (!c) return "";
-    // Classifier output, not a confirmed detection; the backend sets present only at a score >= 0.60.
-    const [label, cls] = c.present ? ["Likely", "likely"] : ["Not seen", "muted"];
+    // Classifier output, not a confirmed detection (backend: present only at a score >= 0.60): never "Likely"/"Detected".
+    const [label, cls] = c.present ? ["Possible", "possible"] : ["Not seen", "muted"];
     const score = c.prob != null ? ` (model score ${Math.round(c.prob * 100)}%)` : "";
     return `<div class="cause"><span>${name}</span>
       <span class="${cls}">${label}${score}</span></div>`;
