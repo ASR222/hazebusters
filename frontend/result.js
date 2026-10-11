@@ -1,6 +1,6 @@
 // Result screen, built from backend/contract.json (`result`) plus GET /jobs' presigned `audio_urls` / `gradcam_url`.
 (function () {
-  const { BANDS, category, esc, parts, clock, ago } = window.fmt;
+  const { category, esc, parts, clock, ago } = window.fmt;
 
   const PROFILES = { school: "School", worker: "Outdoor worker", general: "General" };
   const PROFILE_HOURS = { school: [7, 17], worker: [6, 19], general: [6, 21] };  // backend combine.PROFILE_WINDOWS
@@ -14,7 +14,8 @@
   };
 
   const hourText = (h) => clock(`2000-01-01T${String(h).padStart(2, "0")}:00`);
-  const bandClass = (b) => (b === 0 || b === 1 || b === 2 ? `b${b}` : "");
+  // CPCB category colour class from the AQI number (DESIGN.md §5); colour always comes with the name/number.
+  const catClass = (aqi) => (aqi == null ? "" : `c-${category(aqi).toLowerCase().replace(" ", "-")}`);
 
   // Hindi counterparts for the decision and share text.
   const HI = {
@@ -72,7 +73,7 @@
     const { verdict, windowLine } = decisionWords(r);
     return `
       <div class="card decision ${esc(d.outdoor)}">
-        <p class="when">${day}${esc(hours)}</p>
+        <p class="when eyebrow">${day}${esc(hours)}</p>
         <p class="verdict"><strong>${esc(verdict)}</strong></p>
         <p class="window">${esc(windowLine)}</p>
         <p class="reason">${esc(REASONS[d.reason_code] || d.reason_code || "")}</p>
@@ -110,14 +111,14 @@
         <h2>Air now</h2>
         <div class="aqi-head">
           <span class="aqi-num">${esc(air.aqi_cpcb)}</span>
-          <span class="pill ${bandClass(air.band)}">${esc(category(air.aqi_cpcb))}</span>
+          <span class="pill ${catClass(air.aqi_cpcb)}">${esc(category(air.aqi_cpcb))}</span>
           <span class="muted">CPCB-style AQI</span>
         </div>
         <div class="kv">
           <p>${sourceLine(air)}</p>
           ${pm ? `<p class="muted">${pm} µg/m³</p>` : ""}
-          <p><strong class="conf-${esc(air.confidence)}">Confidence: ${esc(air.confidence)}</strong>
-            ${air.confidence_reason ? `— ${esc(air.confidence_reason)}` : ""}</p>
+          <p><span class="badge conf-${esc(air.confidence)}">Confidence: ${esc(air.confidence)}</span>
+            ${air.confidence_reason ? `${esc(air.confidence_reason)}` : ""}</p>
           ${otherLine(air)}
           ${r.seasonal_line ? `<p>${esc(r.seasonal_line)}</p>` : ""}
         </div>
@@ -133,7 +134,7 @@
       const pct = Math.max(4, Math.min(100, (s.aqi_cpcb / scale) * 100));
       return `<div class="slot" title="${esc(clock(s.time))}: AQI ${esc(s.aqi_cpcb)} (${esc(category(s.aqi_cpcb))})">
           <span class="val">${esc(s.aqi_cpcb)}</span>
-          <div class="bar ${bandClass(s.band)}" style="height:${pct}%"></div>
+          <div class="bar ${catClass(s.aqi_cpcb)}" style="height:${pct}%"></div>
         </div>`;
     }).join("");
     const labels = slots.map((s) => `<span>${esc(clock(s.time).replace(":00", ""))}</span>`).join("");
@@ -147,7 +148,7 @@
     const tomorrow = r.forecast_tomorrow || [];
     if (!today.length && !tomorrow.length) return "";
     const scale = Math.max(200, ...today.concat(tomorrow).map((s) => s.aqi_cpcb || 0));
-    const legend = BANDS.map((b, i) => `<span><i class="b${i}"></i>${esc(b)}</span>`).join("");
+    const legend = [25, 75, 150, 250, 350, 450].map((a) => `<span><i class="${catClass(a)}"></i>${esc(category(a))}</span>`).join("");
     return `
       <div class="card">
         <h2>Forecast (3-hour slots)</h2>
@@ -241,7 +242,7 @@
     const coords = loc.lat != null ? `${(+loc.lat).toFixed(3)}, ${(+loc.lon).toFixed(3)}` : "";
     const place = loc.place || (picked && picked.city)
       || (picked && picked.gps ? `Your location${coords ? ` (${coords})` : ""}` : coords);
-    return `<p class="muted">${esc(place)}${place ? " · " : ""}${esc(PROFILES[r.profile] || "")}</p>`;
+    return `<p class="eyebrow meta">${esc(place)}${place ? " · " : ""}${esc(PROFILES[r.profile] || "")}</p>`;
   }
 
   // --- Share (never mentions the video causes) -------------------------------

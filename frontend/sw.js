@@ -1,10 +1,10 @@
 // Network-first for the page's own files; the cache is only an offline fallback.
 // Cross-origin requests (API, S3 PUT, presigned audio/CAM) are never intercepted.
 // Bump CACHE_VERSION on every deploy so old caches are dropped.
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v7";
 const CACHE = `hazebusters-${CACHE_VERSION}`;
 const SHELL = ["./", "index.html", "styles.css", "config.js", "format.js", "api.js", "result.js", "app.js",
-  "manifest.webmanifest", "icon.svg"];
+  "manifest.webmanifest", "icons/leaf-32.png", "icons/leaf-192.png", "icons/leaf-512.png", "bg/bg.webp", "bg/bg-portrait.webp"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
