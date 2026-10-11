@@ -123,8 +123,8 @@
 
   function causeRow(name, c) {
     if (!c) return "";
-    // Classifier output, not a confirmed detection: >= 0.6 "Likely", present below that "Possible".
-    const [label, cls] = c.present && c.prob >= 0.6 ? ["Likely", "likely"] : c.present ? ["Possible", "possible"] : ["Not seen", "muted"];
+    // Classifier output, not a confirmed detection; the backend sets present only at a score >= 0.60.
+    const [label, cls] = c.present ? ["Likely", "likely"] : ["Not seen", "muted"];
     const score = c.prob != null ? ` (model score ${Math.round(c.prob * 100)}%)` : "";
     return `<div class="cause"><span>${name}</span>
       <span class="${cls}">${label}${score}</span></div>`;
@@ -151,7 +151,7 @@
       const words = [...new Set(reasons.map(plainReason))];
       return `
       <div class="card">
-        <h2>What's in your video</h2>
+        <h2>What's in your video <span class="exp">(experimental)</span></h2>
         <p>Couldn't check this clip${words.length ? `: ${esc(words.join(", "))}` : ""}. Point the camera at the sky or street outdoors.</p>
       </div>`;
     }
@@ -165,11 +165,12 @@
          <p class="muted">Highlighted: where the model saw it (CAM).</p>` : "";
     return `
       <div class="card">
-        <h2>What's in your video</h2>
+        <h2>What's in your video <span class="exp">(experimental)</span></h2>
         ${causeRow("Smoke", c.smoke)}
         ${causeRow("Fire", c.fire)}
         ${vehicles}
         ${cam}
+        <p class="note">On our 23 test clips this found smoke in 6 of 7, but also flagged 5 of 13 hazy skies with no smoke. Treat it as a hint.</p>
         ${frames}
         <p class="muted">This only shows possible sources. It never changes the AQI.</p>
       </div>`;
