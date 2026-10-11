@@ -5,17 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>HazeBusters</title>
   <meta name="description" content="How bad the air likely is today, where that number comes from, and what to do.">
-  <meta name="theme-color" content="#0f766e">
+  <meta name="theme-color" content="#0b3d78">
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/leaf-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="icons/leaf-192.png">
+  <link rel="preload" as="image" href="bg/bg-portrait.webp" media="(max-width: 767px)" fetchpriority="high">
+  <link rel="preload" as="image" href="bg/bg.webp" media="(min-width: 768px)" fetchpriority="high">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Static sky: one fixed layer (not background-attachment: fixed, which iOS Safari breaks). -->
+  <div class="sky" aria-hidden="true">
+    <picture>
+      <source media="(max-width: 767px)" srcset="bg/bg-portrait.webp">
+      <img src="bg/bg.webp" alt="" fetchpriority="high" decoding="async">
+    </picture>
+    <div class="scrim"></div>
+  </div>
+
   <header class="top">
-    <h1>HazeBusters</h1>
+    <h1><img class="mark" src="icons/leaf-192.png" alt="" width="32" height="32">HazeBusters</h1>
     <p class="tag">Air today, where the number comes from, and what to do.</p>
   </header>
 
@@ -38,7 +50,7 @@
           <p id="loc-status" class="muted" aria-live="polite"></p>
           <label for="city" class="sub">Or pick a city</label>
           <select id="city">
-            <option value="">—</option>
+            <option value="">Choose a city</option>
             <option value="23.3441,85.3096">Ranchi</option>
             <option value="28.6139,77.2090">Delhi</option>
             <option value="17.3850,78.4867">Hyderabad</option>
@@ -47,6 +59,7 @@
             <option value="23.7957,86.4304">Dhanbad</option>
             <option value="22.5726,88.3639">Kolkata</option>
             <option value="19.0760,72.8777">Mumbai</option>
+            <option value="22.7196,75.8577">Indore</option>
           </select>
         </fieldset>
 
@@ -100,7 +113,7 @@
     </section>
   </main>
 
-  <footer class="credits">
+  <footer class="credits card">
     <p>Air-quality model data: <a href="https://atmosphere.copernicus.eu/" rel="noopener">CAMS</a>
       (Copernicus Atmosphere Monitoring Service) via <a href="https://open-meteo.com/" rel="noopener">Open-Meteo</a>.
       Station data: <a href="https://aqicn.org/" rel="noopener">World Air Quality Index project (WAQI)</a>.
