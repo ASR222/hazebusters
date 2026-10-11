@@ -51,7 +51,7 @@ def test_good_json_is_used():
     assert sent["aqi"] == 134 and sent["outdoor"] == "limit" and sent["profile"] == "school"
     assert sent["best_window"] == {"en": "from 9 AM to 12 noon", "hi": "सुबह 9 बजे से दोपहर 12 बजे तक"}
     assert sent["health_statement_en"] == advice.CPCB_HEALTH["Moderate"]
-    assert sent["causes"] == {"available": False}  # stub causes never reach the model
+    assert "causes" not in sent  # causes never reach the model
     assert sent["max_sentences"] == llm.MAX_SENTENCES
 
 
@@ -110,45 +110,9 @@ def test_sentence_split():
     assert len(llm.sentences(GOOD["hi"])) == 3 and len(llm.sentences(GOOD["en"])) == 3
 
 
-def _facts_with(smoke):
-    f = advice.facts(AIR, "school")
-    f["causes"] = {"available": True, "smoke": smoke, "fire": {"present": False}}
-    return f
-
-
-def test_causes_reach_model_only_when_ran():
-    c = {"smoke": {"present": True, "prob": 0.45}, "fire": {"present": False, "prob": 0.1}}
-    assert advice.facts(AIR, "school", c, False)["causes"] == {"available": False}
-    assert advice.facts(AIR, "school", c, True)["causes"] == {
-        "available": True, "smoke": {"present": True, "certainty": "possible"}, "fire": {"present": False}}
-    c["smoke"]["prob"] = 0.8
-    assert advice.facts(AIR, "school", c, True)["causes"]["smoke"]["certainty"] == "likely"
-
-
-def test_smoke_mentioned_when_absent_is_rejected():
-    bad = {"en": GOOD["en"] + " Smoke is visible.", "hi": GOOD["hi"]}
-    with pytest.raises(llm.AdviceRejected, match="mentions smoke but it is not present"):
-        llm.validate(bad, _facts_with({"present": False}))
-    bad = {"en": GOOD["en"], "hi": GOOD["hi"] + " पास में आग है।"}
-    with pytest.raises(llm.AdviceRejected, match="mentions fire"):
-        llm.validate(bad, advice.facts(AIR, "school"))
-
-
 def test_hindi_word_edges():
     ok = {"en": GOOD["en"], "hi": GOOD["hi"] + " आगे भी धुंध रह सकती है।"}  # "आगे" isn't fire, "धुंध" isn't smoke
     assert llm.validate(ok, advice.facts(AIR, "school")) == ok
-
-
-def test_possible_smoke_must_not_sound_definite():
-    possible = _facts_with({"present": True, "certainty": "possible"})
-    ok = {"en": GOOD["en"] + " There is possible smoke nearby.", "hi": GOOD["hi"] + " पास में धुआँ हो सकता है।"}
-    assert llm.validate(ok, possible) == ok
-    with pytest.raises(llm.AdviceRejected, match="en states possible smoke as definite"):
-        llm.validate({**ok, "en": GOOD["en"] + " Smoke was detected nearby."}, possible)
-    with pytest.raises(llm.AdviceRejected, match="hi states possible smoke as definite"):
-        llm.validate({**ok, "hi": GOOD["hi"] + " पास में धुआँ पाया गया।"}, possible)
-    likely = _facts_with({"present": True, "certainty": "likely"})
-    assert llm.validate({**ok, "en": GOOD["en"] + " Smoke is likely visible."}, likely)
 
 
 def test_missing_hindi_falls_back(capsys):
@@ -212,19 +176,8 @@ def test_ssml_safe_for_model_output(text):
 # --- smoke/fire: cause sentence appended in code to Bedrock's advice ------------------------------
 
 LIKELY_SMOKE = {"smoke": {"present": True, "prob": 0.95}, "fire": {"present": False, "prob": 0.1}}
-POSSIBLE_SMOKE = {"smoke": {"present": True, "prob": 0.45}, "fire": {"present": False, "prob": 0.1}}
+BOTH = {"smoke": {"present": True, "prob": 0.7}, "fire": {"present": True, "prob": 0.8}}
 FIRE = {"smoke": {"present": False, "prob": 0.1}, "fire": {"present": True, "prob": 0.9}}
-
-
-@pytest.mark.parametrize("causes, en, hi", [
-    (LIKELY_SMOKE, "Smoke is visible in your clip; stay away from it.", "आपकी क्लिप में धुआँ दिख रहा है; उससे दूर रहें।"),
-    (POSSIBLE_SMOKE, "There is possible smoke in your clip.", "आपकी क्लिप में धुआँ हो सकता है।"),
-    (FIRE, "Fire is visible in your clip; stay away from it.", "आपकी क्लिप में आग दिख रही है; उससे दूर रहें।"),
-])
-def test_cause_line_appended_to_bedrock_advice(causes, en, hi):
-    out, speech = advice.build(AIR, "school", causes, True, bedrock=FakeBedrock(json.dumps(GOOD, ensure_ascii=False)))
-    assert out == {"en": f"{GOOD['en']} {en}", "hi": f"{GOOD['hi']} {hi}", "source": "bedrock"}
-    assert speech == {"en": [GOOD["en"], en], "hi": [GOOD["hi"], hi]}  # separate section -> pause before it
 
 
 def test_no_cause_line_when_clear_or_model_did_not_run():
@@ -240,23 +193,42 @@ def test_sentence_limit_leaves_room_for_cause_line(capsys):
     assert out["source"] == "bedrock"  # 4 allowed without a cause line
     out, _ = advice.build(AIR, "school", LIKELY_SMOKE, True, bedrock=FakeBedrock(json.dumps(four, ensure_ascii=False)))
     assert out["source"] == "template" and "has 4 sentences (> 3)" in capsys.readouterr().out
-    assert "Smoke is visible in your clip" in out["en"]  # the template shows it too
-
-
-def test_model_mentioning_present_smoke_is_not_rejected():
-    f = _facts_with({"present": True, "certainty": "likely"})
-    ok = {"en": GOOD["en"].replace(" The best time", " Smoke is nearby. The best time"), "hi": GOOD["hi"]}
-    assert llm.validate(ok, f, max_sentences=4) == ok
-
-
-def test_bedrock_mentioning_absent_smoke_still_falls_back(capsys):
-    bad = {"en": GOOD["en"].replace(" The best time", " Smoke is nearby. The best time"), "hi": GOOD["hi"]}
-    clear = {"smoke": {"present": False, "prob": 0.1}, "fire": {"present": False, "prob": 0.1}}
-    out, _ = advice.build(AIR, "school", clear, True, bedrock=FakeBedrock(json.dumps(bad, ensure_ascii=False)))
-    assert out["source"] == "template" and "mentions smoke but it is not present" in capsys.readouterr().out
+    assert advice.CAUSE_LINES[("smoke",)][0] in out["en"]  # the template shows it too
 
 
 def test_sentence_budget_sent_to_model():
     fake = FakeBedrock(json.dumps(GOOD, ensure_ascii=False))
     advice.build(AIR, "school", LIKELY_SMOKE, True, bedrock=fake)
     assert json.loads(fake.calls[0]["messages"][0]["content"][0]["text"])["max_sentences"] == llm.MAX_SENTENCES - 1
+
+
+@pytest.mark.parametrize("causes, key", [(LIKELY_SMOKE, ("smoke",)), (FIRE, ("fire",)), (BOTH, ("smoke", "fire"))])
+def test_hedged_cause_line_appended_to_bedrock_advice(causes, key):
+    en, hi = advice.CAUSE_LINES[key]
+    out, speech = advice.build(AIR, "school", causes, True, bedrock=FakeBedrock(json.dumps(GOOD, ensure_ascii=False)))
+    assert out == {"en": f"{GOOD['en']} {en}", "hi": f"{GOOD['hi']} {hi}", "source": "bedrock"}
+    assert speech == {"en": [GOOD["en"], en], "hi": [GOOD["hi"], hi]}
+
+
+def test_cause_lines_are_hedged():
+    assert advice.CAUSE_LINES[("smoke",)] == (
+        "Our camera check suggests possible smoke in your clip (experimental). If you can see a smoke source nearby, "
+        "move away from it.",
+        "कैमरा जाँच के अनुसार आपकी क्लिप में धुआँ हो सकता है (प्रयोगात्मक)। अगर पास में धुएँ का स्रोत दिखे, तो उससे दूर रहें।")
+    assert advice.CAUSE_LINES[("fire",)][1] == (
+        "कैमरा जाँच के अनुसार आपकी क्लिप में आग हो सकती है (प्रयोगात्मक)। अगर पास में आग दिखे, तो उससे दूर रहें।")
+    for en, hi in advice.CAUSE_LINES.values():
+        assert "possible" in en and "(experimental)" in en and "हो सकत" in hi and "(प्रयोगात्मक)" in hi
+
+
+@pytest.mark.parametrize("causes", [None, LIKELY_SMOKE])
+def test_model_mentioning_smoke_is_always_rejected(capsys, causes):
+    bad = {"en": GOOD["en"].replace(" The best time", " Away from the smoke, the best time"), "hi": GOOD["hi"]}
+    out, _ = advice.build(AIR, "school", causes, causes is not None,
+                          bedrock=FakeBedrock(json.dumps(bad, ensure_ascii=False)))
+    assert out["source"] == "template" and "mentions smoke" in capsys.readouterr().out
+
+
+def test_model_mentioning_fire_in_hindi_is_rejected():
+    with pytest.raises(llm.AdviceRejected, match="mentions fire"):
+        llm.validate({"en": GOOD["en"], "hi": GOOD["hi"] + " पास में आग है।"}, advice.facts(AIR, "school"))

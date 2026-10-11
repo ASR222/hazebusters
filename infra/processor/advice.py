@@ -43,21 +43,21 @@ CPCB_HEALTH = {
     "Severe": "Affects healthy people and seriously impacts those with existing diseases",
 }
 
-# Smoke/fire seen in the clip, keyed by the labels present (in LABELS order).
-CAUSE_LIKELY = {
-    ("smoke",): ("Smoke is visible in your clip; stay away from it.", "आपकी क्लिप में धुआँ दिख रहा है; उससे दूर रहें।"),
-    ("fire",): ("Fire is visible in your clip; stay away from it.", "आपकी क्लिप में आग दिख रही है; उससे दूर रहें।"),
-    ("smoke", "fire"): ("Smoke and fire are visible in your clip; stay away from them.",
-                        "आपकी क्लिप में धुआँ और आग दिख रहे हैं; उनसे दूर रहें।"),
+# Hedged cause line, appended in code whenever smoke/fire is present (the smoke/fire model is experimental),
+# keyed by the labels present (in causes.LABELS order). Bedrock never writes about causes.
+CAUSE_LINES = {
+    ("smoke",): ("Our camera check suggests possible smoke in your clip (experimental). If you can see a smoke "
+                 "source nearby, move away from it.",
+                 "कैमरा जाँच के अनुसार आपकी क्लिप में धुआँ हो सकता है (प्रयोगात्मक)। अगर पास में धुएँ का स्रोत दिखे, "
+                 "तो उससे दूर रहें।"),
+    ("fire",): ("Our camera check suggests possible fire in your clip (experimental). If you can see a fire nearby, "
+                "move away from it.",
+                "कैमरा जाँच के अनुसार आपकी क्लिप में आग हो सकती है (प्रयोगात्मक)। अगर पास में आग दिखे, तो उससे दूर रहें।"),
+    ("smoke", "fire"): ("Our camera check suggests possible smoke and fire in your clip (experimental). If you can "
+                        "see a smoke source or a fire nearby, move away from it.",
+                        "कैमरा जाँच के अनुसार आपकी क्लिप में धुआँ और आग हो सकते हैं (प्रयोगात्मक)। अगर पास में धुएँ "
+                        "का स्रोत या आग दिखे, तो उससे दूर रहें।"),
 }
-CAUSE_POSSIBLE = {
-    ("smoke",): ("There is possible smoke in your clip.", "आपकी क्लिप में धुआँ हो सकता है।"),
-    ("fire",): ("There is possible fire in your clip.", "आपकी क्लिप में आग हो सकती है।"),
-    ("smoke", "fire"): ("There is possible smoke and fire in your clip.", "आपकी क्लिप में धुआँ और आग हो सकते हैं।"),
-}
-
-# Below this per-clip probability a present smoke/fire is only "possible" (never "detected").
-POSSIBLE_BELOW = 0.6
 
 # Period word by hour (24 h): 4-11 morning, 12-15 afternoon, 16-18 evening, 19-3 night.
 PERIODS = ((4, 11, "सुबह"), (12, 15, "दोपहर"), (16, 18, "शाम"))
@@ -122,8 +122,9 @@ def _lower_first(s: str) -> str:
     return s[:1].lower() + s[1:]
 
 
-def facts(air: dict, profile: str, causes: dict | None = None, causes_available: bool = False) -> dict:
-    """The only input the model sees: computed numbers and decisions, windows already in spoken form."""
+def facts(air: dict, profile: str) -> dict:
+    """The only input the model sees: computed numbers and decisions, windows already in spoken form. No causes:
+    the hedged cause line is appended in code (cause_line)."""
     d, a = air["decision"], air["air"]
     category = aqi_category(a["aqi_cpcb"])
     w = d["best_window"] if d["outdoor"] != "yes" else None
@@ -133,35 +134,22 @@ def facts(air: dict, profile: str, causes: dict | None = None, causes_available:
         "best_window": {"en": english_range(_hm(w["start"]), _hm(w["end"])),
                         "hi": hindi_range(_hm(w["start"]), _hm(w["end"]))} if w else None,
         "source": a["used"], "confidence": a["confidence"],
-        "causes": cause_info(causes, causes_available),
     }
     return out
 
 
 def cause_info(causes: dict | None, available: bool) -> dict:
-    """Smoke/fire as the model and the template see them: present + certainty, no probabilities (no numbers to
-    quote). {"available": False} unless the smoke/fire model ran."""
+    """Which causes are present: {"available": bool, "smoke": bool, "fire": bool}. available is False unless the
+    smoke/fire model ran (stub or skipped causes are never shown)."""
     if not (available and causes):
         return {"available": False}
-    out = {"available": True}
-    for label in ("smoke", "fire"):
-        c = causes[label]
-        out[label] = ({"present": True, "certainty": "possible" if c["prob"] < POSSIBLE_BELOW else "likely"}
-                      if c["present"] else {"present": False})
-    return out
+    return {"available": True, **{label: bool(causes[label]["present"]) for label in ("smoke", "fire")}}
 
 
 def cause_line(info: dict) -> tuple[str, str] | None:
-    """Template sentence (en, hi) for smoke/fire seen in the clip, or None."""
-    if not info.get("available"):
-        return None
-    likely = [k for k in ("smoke", "fire") if info[k]["present"] and info[k]["certainty"] == "likely"]
-    possible = [k for k in ("smoke", "fire") if info[k]["present"] and info[k]["certainty"] == "possible"]
-    if likely:
-        return CAUSE_LIKELY[tuple(likely)]
-    if possible:
-        return CAUSE_POSSIBLE[tuple(possible)]
-    return None
+    """Hedged cause line (en, hi) when smoke and/or fire is present, else None."""
+    present = tuple(k for k in ("smoke", "fire") if info.get("available") and info[k])
+    return CAUSE_LINES[present] if present else None
 
 
 def build(air: dict, profile: str, causes: dict | None = None, causes_available: bool = False,
@@ -177,7 +165,7 @@ def build(air: dict, profile: str, causes: dict | None = None, causes_available:
         return template, sections
     cause = cause_line(info)
     try:
-        out = llm.advise(facts(air, profile, causes, causes_available), bedrock,
+        out = llm.advise(facts(air, profile), bedrock,
                          max_sentences=llm.MAX_SENTENCES - (1 if cause else 0))
     except Exception as e:
         print(json.dumps({"advice": "template_fallback", "reason": f"{type(e).__name__}: {e}"}, ensure_ascii=False))

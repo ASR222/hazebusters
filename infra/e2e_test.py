@@ -5,8 +5,8 @@
 Per clip: POST /jobs (--place, default Ranchi; school) -> PUT the clip to the presigned URL -> poll GET /jobs/{id} every 2 s
 until done/failed (60 s) -> print the JSON and check it against backend/contract.json -> download the Hindi
 and English audio URLs and check each is a non-empty mp3 (--save-audio DIR keeps the files) -> check smoke: clips
-named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url) and Bedrock advice carrying the smoke
-line; all others must
+named with --expect-smoke must come back smoke.present with a loading JPEG overlay (gradcam_url) and Bedrock advice ending with the
+hedged smoke line; all others must
 come back without smoke -> vehicle_count must be an int (the YOLO model ran); clips named with --expect-vehicles
 must have at least 1; clips named with --expect-skip must be rejected by the quality gate (causes skipped,
 caveat, still status done). Exit 1 on any failure.
@@ -119,8 +119,8 @@ def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> l
         return []
     a = got["result"]["advice"]
     errs = [] if a["source"] == "bedrock" else [f"advice.source = {a['source']!r}, expected 'bedrock'"]
-    if "smoke" not in a["en"].lower() or "धुआँ" not in a["hi"]:
-        errs.append("smoke cause line missing from advice")
+    if not a["en"].endswith(SMOKE_LINE[0]) or not a["hi"].endswith(SMOKE_LINE[1]):
+        errs.append("hedged smoke line missing from the end of the advice")
     url = got.get("gradcam_url")
     if not c["gradcam_key"] or not url:
         return errs + [f"no overlay (gradcam_key={c['gradcam_key']!r}, url={'set' if url else None})"]
@@ -134,6 +134,11 @@ def check_smoke(got: dict, clip: Path, expect: bool, save_dir: Path | None) -> l
 
 
 SKIP_CAVEAT = "Couldn't check what's in this clip"
+# Must match infra/processor/advice.py CAUSE_LINES[("smoke",)] (appended in code, not written by Bedrock).
+SMOKE_LINE = ("Our camera check suggests possible smoke in your clip (experimental). If you can see a smoke source "
+              "nearby, move away from it.",
+              "कैमरा जाँच के अनुसार आपकी क्लिप में धुआँ हो सकता है (प्रयोगात्मक)। अगर पास में धुएँ का स्रोत दिखे, "
+              "तो उससे दूर रहें।")
 
 
 def check_skipped(got: dict, clip: Path) -> list[str]:
