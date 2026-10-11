@@ -63,5 +63,5 @@ cd infra && uv run --no-project --with pytest --with boto3 --with numpy --with p
 
 ## Licence
 - **Ultralytics YOLO11n** (vehicle detection, COCO-pretrained; `ml/src/hazeml/yolo_export.py`, `vehicles.py`, `infra/processor/vehicles.py`) is licensed under **AGPL-3.0** (https://github.com/ultralytics/ultralytics). Because we ship it, this repository must stay open source under AGPL-3.0-compatible terms. The weights are downloaded at build time and not committed.
-- **Our code** is intended to be released under **AGPL-3.0**; a `LICENSE` file still has to be added.
+- **Our code** is licensed under **AGPL-3.0**; see [`LICENSE`](LICENSE) (official text). Third-party data and models keep their own licences (Credits above).
 - **Data:** the image datasets above (TRAQID, India/Nepal) and the Open-Meteo free tier are **non-commercial**. Commercial use needs permission or our own data.
