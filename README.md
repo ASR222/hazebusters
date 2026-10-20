@@ -2,7 +2,7 @@
 
 **Most places have no monitor nearby. We tell you how far your nearest reading really is, what's polluting the air around you, and what to do today, in Hindi.**
 
-WeMakeDevs × AWS Environmental Hacks 2026 (Air track). **Live demo:** https://main.dxwuap9t49si3.amplifyapp.com
+WeMakeDevs × AWS Environmental Hacks 2026 (Air track). **Live demo:** https://main.dxwuap9t49si3.amplifyapp.com · **Demo video:** https://youtu.be/rxz5jJ9uge0
 Write-up (problem, results, limitations, credits): [`docs/WRITEUP.md`](docs/WRITEUP.md).
 
 ## What it does
