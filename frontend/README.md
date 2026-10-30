@@ -10,6 +10,9 @@ The result screen renders `result` (shape: `backend/contract.json`) plus `audio_
 | `api.js` | create job, XHR upload with progress, polling |
 | `app.js` | input / progress / result screens, geolocation + city fallback, retry, `?mock=1` |
 | `result.js` | decision, AQI + source, forecast strip, causes, EN/HI advice + audio |
+| `ui.js` | presentational only: theme toggle, nav, hero slideshow, photo wall, stepper, before/after, playground, tour, latest-data band, About-the-data modal |
+| `credits.js`, `art.js`, `IMAGES.md` | every image slot with caption + credit; original SVG art for slots without a photo; how to add photos |
+| `help.html` | help guide: how it works, guided tour, setup, troubleshooting |
 | `sw.js`, `manifest.webmanifest` | installable PWA; network-first for own files (cache = offline fallback), never intercepts cross-origin (API, S3) |
 
 ## Run locally
@@ -26,7 +29,7 @@ Open http://localhost:8000 (geolocation works on `localhost` and HTTPS only; on 
 1. Set `API_BASE` in `config.js` to the `ApiUrl` stack output, and **bump `CACHE_VERSION` in `sw.js`** (every deploy).
 2. Zip the **contents** of `frontend/` (`index.html` must sit at the zip root), without `mock/`. Pass `icons` and `bg` as folders: listing their files individually makes `zipfile` drop the folder paths.
    ```bash
-   cd frontend && python3 -m zipfile -c ../frontend.zip index.html styles.css config.js format.js api.js result.js app.js sw.js manifest.webmanifest icons bg
+   cd frontend && python3 -m zipfile -c ../frontend.zip index.html styles.css config.js format.js api.js result.js app.js credits.js art.js ui.js help.html sw.js manifest.webmanifest icons bg img
    ```
 3. AWS console → Amplify (region ap-south-1) → **Create new app** → **Deploy without Git** → app name `hazebusters`, branch `main` → drag `frontend.zip` → **Save and deploy**.
 4. Open the `https://main.<id>.amplifyapp.com` URL. Redeploy: rebuild the zip → app → branch `main` → **Deploy updates** → drop the new zip.
